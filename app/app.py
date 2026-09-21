@@ -20,7 +20,7 @@ from urllib.parse import urlparse, parse_qs
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from lib import checker, content, game, genie, queries, week as weeklib    # noqa: E402
+from lib import checker, content, durable, game, genie, queries, tablecheck, week as weeklib  # noqa: E402
 from lib.config import Config                                             # noqa: E402
 from lib.logstore import LogStore
 from lib.localstore import LocalStore
@@ -78,17 +78,40 @@ _DEV_TOKEN = None if CFG.in_databricks else (os.environ.get("DEV_SQL_TOKEN") or 
 # `LOG_TABLE` is the name the SQL is built against: the fully-qualified Delta name in delta mode, the
 # bare SQLite table name in local mode. Held separately from CFG.log_table so nothing downstream has to
 # branch on the mode to build a query.
-if CFG.storage_mode == "local":
-    STORE = LocalStore(CFG.local_db_path, table=CFG.local_db_table, build=CFG.build)
-    LOG_TABLE = CFG.local_db_table
-    print(f"[storage] LOCAL mode: sqlite at {CFG.local_db_path} table={CFG.local_db_table} "
-          f"(ephemeral — a restart loses it; export/import is the durability story)",
-          file=sys.stderr, flush=True)
-else:
-    STORE = LogStore(CFG.host, CFG.log_table, CFG.warehouse_id, CFG.client_id, CFG.client_secret,
-                     build=CFG.build, dev_token=_DEV_TOKEN) \
-        if CFG.log_table and CFG.warehouse_id and (CFG.client_id or _DEV_TOKEN) else None
-    LOG_TABLE = CFG.log_table
+#
+# ⭐ THE MODE IS NOW RESOLVED BEFORE THE STORE IS BUILT, because on the no-CLI path the operator sets
+#    the table from inside the app and that setting lives in the WORKSPACE, not in app.yaml (lib/durable.py
+#    says why it cannot live in the log store). `DURABLE.read()` is one HTTP round trip at boot, it can
+#    never raise, and on a laptop with no service-principal credentials it does not even make the call.
+DURABLE = durable.DurableSettings(CFG.host, CFG.client_id, CFG.client_secret,
+                                  CFG.app_name or "genie-bake-off", path=CFG.state_path,
+                                  token=_DEV_TOKEN)
+_DOC, _DOC_STATE, _DOC_DETAIL = DURABLE.read(force=True)
+_APPLIED = CFG.apply_overrides(_DOC)
+if _APPLIED:
+    print(f"[storage] operator settings from {DURABLE.path}: {_APPLIED}", file=sys.stderr, flush=True)
+elif _DOC_STATE not in ("present", "absent"):
+    print(f"[storage] durable settings {_DOC_STATE}: {_DOC_DETAIL}", file=sys.stderr, flush=True)
+
+
+def build_store():
+    """-> (store, log_table) for the mode now in force. The one place a store is constructed, so the
+    runtime switch and the boot take the same path rather than two that can drift."""
+    if CFG.storage_mode == "local":
+        print(f"[storage] LOCAL mode: sqlite at {CFG.local_db_path} table={CFG.local_db_table} "
+              f"(ephemeral — a restart loses it; export/import is the durability story)",
+              file=sys.stderr, flush=True)
+        return LocalStore(CFG.local_db_path, table=CFG.local_db_table, build=CFG.build), \
+            CFG.local_db_table
+    if CFG.log_table and CFG.warehouse_id and (CFG.client_id or _DEV_TOKEN):
+        print(f"[storage] DELTA mode: {CFG.log_table} via warehouse {CFG.warehouse_id} "
+              f"(source: {CFG.sources.get('log_table')})", file=sys.stderr, flush=True)
+        return LogStore(CFG.host, CFG.log_table, CFG.warehouse_id, CFG.client_id, CFG.client_secret,
+                        build=CFG.build, dev_token=_DEV_TOKEN), CFG.log_table
+    return None, CFG.log_table
+
+
+STORE, LOG_TABLE = build_store()
 STATES = PlayerStates(STORE, queries, LOG_TABLE) if STORE else None
 SETTINGS = Settings(STORE, LOG_TABLE) if STORE else None
 BOOTED = time.time()
@@ -106,6 +129,75 @@ def clock_for(season_id):
     if season_id not in CLOCKS:
         CLOCKS[season_id] = Clock(STORE, queries, LOG_TABLE, season_id)
     return CLOCKS[season_id]
+
+
+# ── SWITCHING WHERE THE ROWS GO, WITHOUT A REDEPLOY ───────────────────────────────────────────
+# THE REQUIREMENT: the operator can name the catalog.schema.table to use, from inside the app. A person
+# with no CLI cannot restart it, so the switch has to happen in the process that is already running.
+#
+# ⛔ EVERY OBJECT BUILT ON THE STORE HAS TO BE REBUILT, and that list is the whole risk here. `PlayerStates`
+#    caches per-blank progress, each `Clock` holds a forward-only accumulator seeded from the old table, and
+#    `Settings` caches the releases — all keyed to the store they were made with. Rebinding `STORE` alone
+#    would leave three objects still reading SQLite while new rows went to Delta: the board would show the
+#    old numbers, and the clock would keep the old total because `max(memory, table)` never moves DOWN.
+#    So this reuses `clear_in_memory_state()`'s inventory rather than keeping a second list of caches.
+_SWITCHES = []                      # what this process has done, for the operator page and /api/health
+
+
+def rebind_store(reason="operator", carry_rows=True):
+    """Rebuild the store and everything hanging off it for the mode now in CFG. -> a report dict.
+
+    `carry_rows` copies whatever the ephemeral SQLite already holds into the new Delta table, deduplicated
+    by `event_id`. Without it, a player who answered before the operator pointed at a table would appear
+    to have their work deleted by an admin action — the rows are not lost, they are simply in a file
+    nothing reads any more, which is the same thing from where the player is sitting.
+    """
+    global STORE, LOG_TABLE, STATES, SETTINGS
+    old, old_table = STORE, LOG_TABLE
+    rows = []
+    if carry_rows and old is not None and isinstance(old, LocalStore):
+        try:
+            # No flush: LocalStore commits inside `log()` (its own flush is a no-op), so the rows are
+            # already there. A commit on a request thread is forbidden in this file for a good reason —
+            # see test_no_request_path_performs_a_synchronous_log_commit — and draining the OTHER kind of
+            # store happens inside LogStore.stop(), where it belongs.
+            rows = old.query("switch:export", queries.export_all(old_table),
+                             [{"name": "lim", "type": "INT", "value": "200000"}], ttl=0)
+        except Exception as e:
+            rows = []
+            _SWITCHES.append({"at": time.time(), "warn": f"could not read the local rows: {e}"})
+    new, new_table = build_store()
+    if new is None:
+        return {"ok": False, "error": "nothing to switch to: no table, warehouse or credentials"}
+    carried = 0
+    if rows:
+        try:
+            ids = [r.get("event_id") for r in rows if r.get("event_id")]
+            already = new.existing_event_ids(ids) if hasattr(new, "existing_event_ids") else set()
+            fresh = [r for r in rows if r.get("event_id") and r["event_id"] not in already]
+            carried = new.insert_rows(fresh) if fresh else 0
+        except Exception as e:
+            # ⭐ NOT fatal, and NOT silent. The new store is still the right place for new rows, and the
+            #    SQLite file is still on disk until this container dies — so the honest outcome is "switched,
+            #    and these rows did not come across", which the operator page prints.
+            _SWITCHES.append({"at": time.time(), "warn": f"the existing local rows were not copied: {e}"})
+    STORE, LOG_TABLE = new, new_table
+    STATES = PlayerStates(STORE, queries, LOG_TABLE)
+    SETTINGS = Settings(STORE, LOG_TABLE)
+    CLOCKS.clear()
+    if old is not None and hasattr(old, "stop"):
+        try:
+            old.stop()
+        except Exception:
+            pass
+    rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "reason": reason,
+           "from": {"mode": ("local" if isinstance(old, LocalStore) else
+                             "delta" if old else "none"), "table": old_table},
+           "to": {"mode": CFG.storage_mode, "table": new_table}, "rows_carried": carried,
+           "rows_found_locally": len(rows), "ok": True}
+    _SWITCHES.append(rec)
+    print(f"[storage] switched: {rec}", file=sys.stderr, flush=True)
+    return rec
 
 
 # ── THE RESET, AND WHY CLEARING MEMORY IS THE HARD HALF ─────────────────────────
@@ -501,7 +593,14 @@ def space_id(v, season=None):
     raises no error.
     """
     season = season or active_season()
-    title = ((season.space_title if season else None) or CFG.genie_space_title) \
+    # ⛔ AN OPERATOR-SET SPACE BEATS THE CONTENT PACK'S OWN TITLE, and it has to. The pack ships
+    #    `space_title: "The Data Desk"`, which is the right default and the wrong answer for a manual
+    #    install whose space is called something else — and that is the one setting  exists to let
+    #    somebody change without a CLI. The ordering is therefore: what an operator saved, then the pack,
+    #    then config's default. `CFG.sources` is what says which of those happened.
+    operator_set = CFG.sources.get("genie_space") == "operator"
+    title = (CFG.genie_space_title if operator_set
+             else ((season.space_title if season else None) or CFG.genie_space_title)) \
             + CFG.genie_space_suffix
     hit = _SPACE["by_title"].get(title)
     if hit:
@@ -511,6 +610,107 @@ def space_id(v, season=None):
         _SPACE["by_title"][title] = sid
     _SPACE["id"], _SPACE["title"], _SPACE["error"] = sid, title, err
     return sid, err
+
+
+# ── WHAT THE OPERATOR PAGE NEEDS TO SHOW ABOUT THIS DEPLOYMENT ────────────────────────────────
+def _sp_token():
+    """A bearer token for the app's OWN service principal — the identity that does the writing.
+
+    ⛔ IT MUST BE THIS IDENTITY AND NOT THE OPERATOR'S. An operator with MANAGE on the catalog would pass
+       every accessibility check while the app still cannot write a row, which is the exact silent failure
+       the check exists to catch. Reuses the log store's token when there is one (it caches and refreshes);
+       falls back to minting one, and on a laptop to DEV_SQL_TOKEN.
+    """
+    if STORE is not None and hasattr(STORE, "_token"):
+        return STORE._token()
+    if _DEV_TOKEN:
+        return _DEV_TOKEN
+    return durable.DurableSettings(CFG.host, CFG.client_id, CFG.client_secret,
+                                   CFG.app_name)._token()
+
+
+def sp_principal():
+    """The name to use in a `GRANT … TO` statement for this app's own service principal.
+
+    ⭐ THE CLIENT ID, NOT THE DISPLAY NAME. Measured: the grants the platform itself makes when
+    you add a Unity Catalog table as an app resource are recorded against the SP's **client id** (a uuid),
+    and `GRANT … TO \\`<uuid>\\`` is accepted. The display name (`app-xxxxxx <app-name>`) contains a space
+    and is not what UC records, so a statement built from it is the kind of instruction that fails for the
+    person following it and works for nobody.
+    """
+    return CFG.client_id or "<the app's service principal>"
+
+
+def storage_instructions(fqn=None):
+    """The SQL and the UI steps the Operator page prints, with this app's own identity substituted.
+
+    ⛔ THE TWO ROUTES ARE NOT EQUIVALENT AND THE PAGE MUST NOT IMPLY THEY ARE. Adding the table as an app
+       RESOURCE removes the SQL STEP — measured: the platform then issues `SELECT`+`MODIFY` on the table,
+       `USE SCHEMA`, and `USE CATALOG`, which is more than the deploy hook can do. It does NOT lower the
+       PRIVILEGE BAR: the grantor recorded on every one of those rows is the person who added the resource,
+       so somebody without `MANAGE` (or ownership) on the catalog cannot do it through the UI either. They
+       need the catalog's owner, whichever route they take.
+    """
+    target = fqn or CFG.log_table or "<catalog>.<schema>.activity_log"
+    return {
+        "principal": sp_principal(),
+        "create_sql": tablecheck.create_sql(target),
+        "grant_sql": tablecheck.grant_sql(target, sp_principal()),
+        "resource_route": [
+            "Compute → Apps → this app → Edit → App resources → Add resource → Unity Catalog table.",
+            f"Pick the table ({target}) and tick BOTH permissions: SELECT and MODIFY (add the table twice "
+            f"if the form takes one permission at a time).",
+            "Add a second resource of type SQL warehouse with permission CAN USE, if the app has none.",
+            "Save. Databricks then grants this app's service principal SELECT and MODIFY on the table, "
+            "USE SCHEMA on its schema and USE CATALOG on its catalog — no SQL at all.",
+        ],
+        "resource_route_caveat": (
+            "This removes the SQL step, not the permission requirement: Databricks makes those grants AS "
+            "YOU, so whoever adds the resource still needs to be the catalog's owner or hold MANAGE on it. "
+            "If you are not, the person who is has to add the resource (or run the GRANTs below) — the "
+            "table's own owner is not enough, because USE CATALOG is a catalog-level privilege."),
+        "sql_route_note": (
+            "The other route, if you would rather not touch the app's resources: run the CREATE TABLE and "
+            "then these three grants in a SQL editor. The first one needs the catalog's owner or MANAGE."),
+    }
+
+
+def operator_config():
+    """One payload for the Genie-space and storage cards. No secrets: paths, states and provenance only."""
+    store_health = STORE.healthy() if STORE else None
+    doc, doc_state, doc_detail = DURABLE.read(force=True)
+    pub = DURABLE.public()
+    season = active_season()
+    return {
+        "ok": True,
+        "app_name": CFG.app_name or None,
+        "build": CFG.build,
+        "storage": CFG.storage_public(),
+        "log_writer": store_health or "not configured",
+        "warehouse_id": CFG.warehouse_id or None,
+        "warehouse_source": CFG.sources.get("warehouse_id"),
+        "rows_now": (STORE.count() if (STORE and hasattr(STORE, "count")) else None),
+        "switches": _SWITCHES[-5:],
+        # Where an operator setting is kept, and whether it can be kept at all. `state` is one of
+        # present / absent / denied / unavailable / error — three of which mean "do not believe an empty
+        # answer", so the page renders them differently.
+        "durable": pub,
+        "genie": {
+            "title_in_force": (CFG.genie_space_title if CFG.sources.get("genie_space") == "operator"
+                               else ((season.space_title if season else None)
+                                     or CFG.genie_space_title)) + CFG.genie_space_suffix,
+            "space_id_in_force": CFG.genie_space_id or None,
+            "source": CFG.sources.get("genie_space"),
+            "pack_title": (season.space_title if season else None),
+            "env_title": (os.environ.get("GENIE_SPACE_TITLE") or None),
+            "resolved": genie_space_health(),
+        },
+        "instructions": storage_instructions(),
+        "settings_doc": {k: doc.get(k) for k in ("log_table_fqn", "warehouse_id", "genie_space_title",
+                                                 "genie_space_id", "set_by", "set_at")},
+        "settings_state": doc_state,
+        "settings_detail": doc_detail,
+    }
 
 
 # ------------------------------------------------------------------ handler
@@ -1024,6 +1224,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(buf.getvalue().encode(), 200, "text/csv; charset=utf-8",
                               {"Content-Disposition": f'attachment; filename="night-desk-log-{stamp}.csv"'})
 
+        # ── everything the two new Operator cards need to render, in one call ────────────────────
+        if path == "/api/operator/config":
+            if not operator_gate(v, self):
+                return self._err("not for you", 403)
+            return self._send(operator_config())
+
         if path == "/api/settings":
             if not operator_gate(v, self):
                 return self._err("not for you", 403)
@@ -1077,6 +1283,162 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             real_wk = None
         session_id = (body.get("session_id") or "").strip() or str(uuid.uuid4())
+
+        # ── POINT THE APP AT A GENIE SPACE, AND PROVE IT WORKS ───────────────────────────
+        # THE REQUIREMENT: after a manual install the operator points at the right Genie space from this
+        # page, and entering it quickly tests that it is working.
+        #
+        # ⭐ THE TEST ASKS A REAL QUESTION, and it has to. Space resolution is lazy and BY TITLE, so
+        #    everything short of a question — the space existing, /api/health being green, an id resolving —
+        #    is satisfied by a space that answers nothing useful. So this asks week 1's first blank, as the
+        #    OPERATOR (the viewer path players use), and compares the answer with the authored value
+        #    server-side. It reports whether it matched; it does NOT send the expected value to the browser,
+        #    because that is the answer key and no payload in this app carries one.
+        if path == "/api/operator/genie-space":
+            if not operator_gate(v, self):
+                return self._err("not for you", 403)
+            clear = bool(body.get("clear"))
+            raw = (body.get("value") or "").strip()
+            if not clear and not raw:
+                return self._err("type the title of your Genie space, or paste its id or its URL")
+            want_id, want_title = "", ""
+            if not clear:
+                want_id, want_title = genie.parse_space_ref(raw)
+            out = {"ok": True, "cleared": clear, "space_id": want_id or None,
+                   "space_title": want_title or None}
+            if not clear:
+                # Resolve first: a title nobody created must not be saved, or the next restart comes up
+                # pointing at nothing and the failure lands on a player instead of on the person typing.
+                sid_res, err = (want_id, None) if want_id else \
+                    genie.resolve_space(CFG.host, v["token"], want_title)
+                if not sid_res:
+                    return self._send({"ok": False, "stage": "resolve", "error": err,
+                                       "spaces": genie.list_space_titles(CFG.host, v["token"])}, 200)
+                out["space_id"] = sid_res
+                if body.get("test", True):
+                    probe = season.cases.get(1, {}).get("clues", [{}])[0] if season else {}
+                    q = probe.get("ask") or GREETING_Q
+                    ans = genie.ask(CFG.host, v["token"], sid_res, q, viewer_user_id=v["user_key"],
+                                    budget=150)
+                    texts = [checker.drop_repeated_sentences(checker.strip_markdown(a["text"]))
+                             for a in ans.get("attachments", []) if a.get("text")]
+                    reply = (texts[0] if texts else "")[:600]
+                    out["test"] = {
+                        "asked": q, "ok": bool(ans.get("ok")), "answer": reply,
+                        "elapsed_s": ans.get("elapsed_s"), "error": ans.get("error"),
+                        "attributed_to_viewer": ans.get("attributed_to_viewer"),
+                        "rows": (ans.get("attachments") or [{}])[0].get("rows", [])[:3],
+                    }
+                    if ans.get("ok") and probe.get("expected") is not None:
+                        # The same two calls every offline validator in tools/ makes, in the same order:
+                        # candidates out of the ROWS first, prose last. `matches_expected` is a boolean —
+                        # the expected value itself never leaves the server.
+                        cands = checker.extract_candidates(
+                            {"attachments": ans.get("attachments", [])})
+                        hit = next((c for c in cands
+                                    if checker.check(probe, c).get("verdict") == "correct"), None)
+                        out["test"]["matches_expected"] = hit is not None
+                        out["test"]["candidates_seen"] = len(cands)
+                    if not ans.get("ok"):
+                        out["ok"] = False
+                        out["error"] = ("The space resolved but it did not answer: "
+                                        + (ans.get("error") or "no answer"))
+                        return self._send(out)
+            if body.get("save", True):
+                ok, why = DURABLE.write({"genie_space_title": (None if clear else (want_title or None)),
+                                         "genie_space_id": (None if clear else (want_id or None))}, v)
+                out["saved"] = ok
+                out["save_error"] = why
+                if not ok:
+                    out["ok"] = False
+                    # ⛔ APPLIED ANYWAY, and said so. Refusing to use a working space because the note
+                    #    could not be filed would trade a durable problem for an immediate one; the page
+                    #    tells the operator it will not survive a restart and names the path that failed.
+                    out["warning"] = ("This space is now in use, but the setting could NOT be stored, so "
+                                      "it will be lost when the app restarts: " + (why or ""))
+                doc, _, _ = DURABLE.read(force=True)
+                CFG.sources["genie_space"] = "env"          # re-derive from scratch
+                CFG.genie_space_id, CFG.genie_space_title = "", os.environ.get(
+                    "GENIE_SPACE_TITLE") or CFG.genie_space_title
+                if clear:
+                    CFG.apply_overrides({})
+                else:
+                    CFG.apply_overrides({"genie_space_title": want_title or None,
+                                         "genie_space_id": want_id or None})
+                _SPACE["by_title"].clear()                  # the cache is keyed by title; the title moved
+                _SPACE["id"], _SPACE["title"], _SPACE["error"] = (out["space_id"], want_title or None,
+                                                                  None)
+            out["config"] = operator_config()
+            return self._send(out)
+
+        # ── POINT THE APP AT A UNITY CATALOG TABLE (persistent storage) ──────────────────
+        # THE REQUIREMENT: for persistent storage the operator enters a catalog.schema.table here; entering
+        # it checks that the table is accessible, and a table that already holds data is picked up as it
+        # stands rather than replaced.
+        if path == "/api/operator/storage":
+            if not operator_gate(v, self):
+                return self._err("not for you", 403)
+            action = (body.get("action") or "check").strip().lower()
+            if action not in ("check", "save", "clear"):
+                return self._err("action must be check, save or clear")
+            if action == "clear":
+                ok, why = DURABLE.write({"log_table_fqn": None}, v)
+                CFG.log_table = CFG.log_table_env
+                CFG.sources["log_table"] = "env" if CFG.log_table_env else "unset"
+                CFG.storage_mode = CFG.storage_mode_declared
+                rec = rebind_store(reason="operator cleared the table", carry_rows=False)
+                return self._send({"ok": bool(ok), "saved": ok, "save_error": why, "switch": rec,
+                                   "config": operator_config()})
+            if CFG.log_table_env:
+                # The environment pinned it; see Config.apply_overrides for why that wins. Refusing loudly
+                # is the point — a box that accepts a value the app will not use is worse than a disabled one.
+                return self._err(
+                    f"This deployment's table comes from its own configuration "
+                    f"(LOG_TABLE_FQN={CFG.log_table_env}), so it cannot be changed from here — that is "
+                    f"either a value in app.yaml or the `log-table` app resource app.yaml reads it from. "
+                    f"Change it wherever it is set and redeploy, or remove it to hand the choice to this "
+                    f"page.", 409)
+            fqn = (body.get("table") or "").strip()
+            cat, sch, tbl = tablecheck.split_fqn(fqn)
+            if cat is None:
+                return self._err(tbl)
+            fqn = f"{cat}.{sch}.{tbl}"
+            warehouse = (body.get("warehouse_id") or CFG.warehouse_id or "").strip()
+            chk = tablecheck.Checker(CFG.host, warehouse, _sp_token, build=CFG.build).check(fqn)
+            out = {"ok": bool(chk.get("ok")), "check": chk, "table": fqn,
+                   "instructions": storage_instructions(fqn)}
+            if action == "save":
+                if not chk.get("ok"):
+                    out["ok"] = False
+                    out["error"] = ("Not saved. " + (chk.get("message") or "the table is not usable") +
+                                    " Fix that and check again — saving a table the app cannot write to "
+                                    "would give you a game that scores nothing and says nothing.")
+                    out["config"] = operator_config()
+                    return self._send(out)
+                ok, why = DURABLE.write({"log_table_fqn": fqn,
+                                         "warehouse_id": (warehouse or None)
+                                         if not CFG.warehouse_id_env else None}, v)
+                out["saved"] = ok
+                out["save_error"] = why
+                if not ok:
+                    # ⛔ REFUSED, unlike the Genie space, and the asymmetry is deliberate: a space that is
+                    #    forgotten on restart costs a failed question, while a TABLE that is forgotten on
+                    #    restart silently sends everyone back to an empty ephemeral game while their rows
+                    #    sit in Delta. That is the worst failure this product has, so it is not entered
+                    #    into on a promise that cannot be kept.
+                    out["ok"] = False
+                    out["error"] = ("NOT switched. The table is fine, but the pointer to it could not be "
+                                    "stored, so a restart would leave this app back on its ephemeral local "
+                                    "database with your rows stranded in Delta. " + (why or ""))
+                    out["config"] = operator_config()
+                    return self._send(out)
+                CFG.log_table, CFG.sources["log_table"] = fqn, "operator"
+                if warehouse and not CFG.warehouse_id:
+                    CFG.warehouse_id, CFG.sources["warehouse_id"] = warehouse, "operator"
+                CFG.storage_mode = "delta"
+                out["switch"] = rebind_store(reason="operator set a table")
+            out["config"] = operator_config()
+            return self._send(out)
 
         if path == "/api/settings":
             if not operator_gate(v, self):

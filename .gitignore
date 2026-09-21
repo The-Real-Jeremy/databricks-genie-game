@@ -1,7 +1,11 @@
 __pycache__/
 *.pyc
 
-# GENERATED per target by the predeploy hook (bootstrap/write_app_yaml.py). A committed copy is a stale
-# copy waiting to be deployed to the wrong target.
-app/app.yaml
+# app/app.yaml IS TRACKED AS OF  and must not be ignored. The manual install is "download the repo as a
+# zip, upload it, create the app in the UI", and no distribution route can ship a file that is not in the
+# repo — so the local-mode default lives there, committed.
+# ⛔ The DAB predeploy (bootstrap/write_app_yaml.py) OVERWRITES it per target with real values, including the
+#    deployment's OPERATOR_PASSWORD. After a bundle deploy the tree is dirty: `git checkout app/app.yaml`
+#    rather than committing it. The suite has a guard that catches it either way, and it is a stronger one
+#    than this ignore line was — an ignore prevents an accident silently, and a test NAMES it.
 

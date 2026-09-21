@@ -1,0 +1,82 @@
+# ── THE APP'S RUNTIME CONFIG ────────────────────────────────────────────────────────────────────────
+# This is what a Databricks App reads to know how to start, and it works AS SHIPPED: upload this folder,
+# point an app at it, and the game runs in local-database mode with nothing edited.
+#
+# ⭐ IT IS COMMITTED ON PURPOSE; it used to be gitignored. The manual install is now "download the
+#    repo as a zip, upload it, create the app in the UI" — and a zip with no app.yaml produces an app that
+#    starts with no command and no environment, which reads as broken code rather than as a missing file.
+#    Every distribution route (GitHub's Download ZIP, `git archive`, the public artefact) can only ship a
+#    file that is IN the repo, so this is that file.
+#
+# ⚠️ THE DAB PATH OVERWRITES IT, per target, from the bundle's variables (bootstrap/write_app_yaml.py, in
+#    the predeploy hook). So after a `bundle deploy` your working tree shows this file as modified — that
+#    is the generator, not you. ⛔ DO NOT COMMIT THAT COPY: it carries the deployment's real
+#    OPERATOR_PASSWORD along with its warehouse and table, and this repo is published.
+#    The test suite refuses a generated copy committed over this one.
+#
+# ⛔ NOTHING HERE NEEDS EDITING FOR A MANUAL INSTALL. Both things a hand-installed deployment must be told
+#    — which Genie space to ask, and which table to keep the scores in — are set on the app's own Operator
+#    page and stored in the workspace, because the person doing it has no CLI and does not edit files. See
+#    app/lib/durable.py for where they are kept, and why they cannot live in the activity log itself.
+command: ["python", "app.py"]
+env:
+  # ── WHERE THE ROWS GO ─────────────────────────────────────────────────────────────────────────────
+  # `local` keeps the activity log in a SQLite file inside the container: no catalog, no table, no grant,
+  # no warehouse. ⚠️ It is EPHEMERAL — ANY replacement of the container deletes it (a stop/start certainly
+  # does; measured), and the Operator page says so in the loudest element it has. To make scores persistent, either name a Unity Catalog table on the
+  # Operator page, or add that table as an app RESOURCE called `log-table` (see below).
+  - name: STORAGE_MODE
+    value: "local"
+  # /tmp is the one path writable in every Apps container.
+  - name: LOCAL_DB_PATH
+    value: "/tmp/bake_off/bake_off.db"
+
+  # ── THE TWO OPTIONAL APP RESOURCES ────────────────────────────────────────────────────────────────
+  # ⭐ `valueFrom` resolves the NAME of an app resource to its value: a SQL warehouse resource yields its
+  #    warehouse id, a Unity Catalog table resource yields the table's full name. MEASURED: when
+  #    the named resource does NOT exist the app still starts and the variable is simply ABSENT — no deploy
+  #    failure, no crash. That is what lets one file serve both modes: add the resources in the UI and this
+  #    deployment becomes persistent with nothing typed anywhere, or leave them out and it runs locally.
+  #    Compute → Apps → your app → Edit → App resources, with these exact resource names:
+  #      warehouse   — SQL warehouse, permission CAN USE
+  #      log-table   — Unity Catalog table, permissions SELECT and MODIFY
+  #    Adding the table as a resource also makes Databricks grant this app's service principal SELECT and
+  #    MODIFY on it, USE SCHEMA on its schema and USE CATALOG on its catalog. ⛔ That removes the SQL step,
+  #    not the permission requirement: those grants are issued AS THE PERSON ADDING THE RESOURCE, so
+  #    whoever does it still has to own the catalog or hold MANAGE on it.
+  - name: WAREHOUSE_ID
+    valueFrom: "warehouse"
+  - name: LOG_TABLE_FQN
+    valueFrom: "log-table"
+
+  # ── WHO MAY OPEN THE OPERATOR PAGE ────────────────────────────────────────────────────────────────
+  # ⛔ CHANGE THIS IF THE OPERATOR PAGE MATTERS. `none` does NOT mean closed: it falls back to the built-in
+  #    default password in `app/lib/config.py`, which is PUBLIC because it is in this repo. Anyone who can
+  #    read this file or the repo can read it, so it gates PLAYERS, not someone with workspace access — and
+  #    that page releases weeks, shows the activity log and can reset everybody's progress. Leaving it as
+  #    `none` is what makes this file work unedited; setting it is what makes the page yours.
+  - name: OPERATOR_PASSWORD
+    value: "none"
+
+  # ── THE GAME ──────────────────────────────────────────────────────────────────────────────────────
+  # The app finds its Genie space by TITLE, so no space id is ever plumbed in here. `none` means no suffix.
+  # If your space has a different title, set it on the Operator page rather than editing this: a value set
+  # there survives a restart and needs no redeploy.
+  - name: GENIE_SPACE_TITLE
+    value: "The Data Desk"
+  - name: GENIE_SPACE_SUFFIX
+    value: "none"
+  - name: SEASON_ID
+    value: "s1_letters"
+  - name: SEASONS
+    value: "s1_letters"
+  - name: SEASON_TZ
+    value: "Australia/Sydney"
+  - name: THEME
+    value: "databricks"
+  - name: ALT_THEME
+    value: "neutral"
+  - name: ALLOW_DATE_OVERRIDE
+    value: "1"
+  - name: BUILD_ID
+    value: "manual"

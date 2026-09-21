@@ -23,8 +23,23 @@ class Config:
         self.build = e.get("BUILD_ID") or "dev"
         self.client_id = e.get("DATABRICKS_CLIENT_ID")
         self.client_secret = e.get("DATABRICKS_CLIENT_SECRET")
+        self.app_name = e.get("DATABRICKS_APP_NAME") or ""
         self.warehouse_id = e.get("WAREHOUSE_ID") or ""
         self.log_table = e.get("LOG_TABLE_FQN") or ""
+        # ── WHAT THE ENVIRONMENT PINNED, kept separately from what is in force ──────────────────
+        # On the no-CLI path an operator can point the app at a table and a Genie space from the Operator
+        # page, and those settings are stored in the workspace (see lib/durable.py). `apply_overrides`
+        # below folds them in. These two fields remember what app.yaml itself said, because "the
+        # environment pinned this" is the reason the Operator page gives for disabling its own box — and a
+        # UI that silently ignores what somebody typed is worse than one that will not accept it.
+        self.log_table_env = self.log_table
+        self.warehouse_id_env = self.warehouse_id
+        self.state_path = (e.get("STATE_PATH") or "").strip()
+        # Provenance for every resolved value, so /api/health and the Operator page can say where the
+        # setting came from rather than only what it is.
+        self.sources = {"log_table": ("env" if self.log_table else "unset"),
+                        "warehouse_id": ("env" if self.warehouse_id else "unset"),
+                        "genie_space": "env"}
         # ── STORAGE MODE ────────────────────────────────────────────────
         # "delta" writes to the target table as before; "local" writes to a SQLite file and needs no
         # warehouse, no catalog grant and no service-principal secret. Delta stays the DEFAULT so an
@@ -39,6 +54,10 @@ class Config:
         if mode not in ("delta", "local"):
             raise ValueError(f"STORAGE_MODE must be 'delta' or 'local', got {e.get('STORAGE_MODE')!r}")
         self.storage_mode = mode
+        # What app.yaml declared, kept for the whole life of the process. `storage_mode` is the mode in
+        # FORCE and can change once (see apply_overrides); this one never does, so a deploy verifier can
+        # still assert what the deployment asked for.
+        self.storage_mode_declared = mode
         # Default under /tmp because that is the one path writable in every Apps container. It is also
         # ephemeral — see the note in localstore.py; point this at a volume if one exists.
         self.local_db_path = e.get("LOCAL_DB_PATH") or "/tmp/night_desk/night_desk.db"
@@ -104,6 +123,61 @@ class Config:
 
         self.in_databricks = bool(e.get("DATABRICKS_APP_NAME"))
 
+    # ── FOLDING IN WHAT AN OPERATOR SET AT RUNTIME ───────────────────────────────────────────────
+    def apply_overrides(self, doc):
+        """Merge the durable settings document (lib/durable.py) into this config, ONCE, at boot — and
+        again when an operator saves. -> a dict of what changed, for the log line.
+
+        ⭐ THE PRECEDENCE IS DELIBERATELY NOT THE SAME FOR BOTH SETTINGS, and the asymmetry is the whole
+        design, so it is written here rather than left to be inferred:
+
+        * **The TABLE: app.yaml WINS.** `LOG_TABLE_FQN` in the environment is a deploy-time commitment about
+          where a customer's data lands. If a stored setting could override it, a bundle deploy that names a
+          table would keep serving while writing somewhere else, a redeploy would not fix it, and the rows
+          already written would be in a table nobody reads. So when the environment names a table, the
+          Operator page DISABLES its box and says why. Nothing is ignored silently.
+        * **The GENIE SPACE: the stored setting WINS.** This is the one setting a manual install exists to let
+          an operator point at afterwards, `GENIE_SPACE_TITLE` always has a value
+          (its default is the shipped title), and being wrong costs a failed question rather than a lost
+          row — resolution is lazy and by title, so a bad value is visible on the first question and
+          reversible with one Clear. An "env wins" rule here would make the box permanently inert.
+        """
+        doc = doc or {}
+        changed = {}
+        tbl = (doc.get("log_table_fqn") or "").strip()
+        if tbl and not self.log_table_env:
+            self.log_table, self.sources["log_table"] = tbl, "operator"
+            changed["log_table"] = tbl
+        elif tbl and self.log_table_env and tbl != self.log_table_env:
+            # Both name a table and they disagree. The environment is in force; this is surfaced rather
+            # than resolved, because it is a person's mistake to see and fix, not a tie to break quietly.
+            self.log_table_conflict = tbl
+            changed["log_table_conflict"] = tbl
+        wh = (doc.get("warehouse_id") or "").strip()
+        if wh and not self.warehouse_id_env:
+            self.warehouse_id, self.sources["warehouse_id"] = wh, "operator"
+            changed["warehouse_id"] = wh
+        sid = (doc.get("genie_space_id") or "").strip()
+        title = (doc.get("genie_space_title") or "").strip()
+        if sid or title:
+            self.genie_space_id = sid
+            if title:
+                self.genie_space_title = title
+                # A stored title is a whole title. The suffix exists so two BUNDLE targets in one workspace
+                # get their own spaces; applying it to a name somebody typed would look for a space they
+                # never made.
+                self.genie_space_suffix = ""
+            self.sources["genie_space"] = "operator"
+            changed["genie_space"] = sid or title
+        # The mode in force is DERIVED, never stored: delta exactly when there is somewhere to write and a
+        # warehouse to write through. A declared `delta` with no table stays delta so `missing()` keeps
+        # reporting it — that deployment is broken and must keep saying so.
+        if self.storage_mode_declared == "local" and self.log_table and self.warehouse_id and \
+                (self.client_id or not self.in_databricks):
+            self.storage_mode = "delta"
+            changed["storage_mode"] = "local -> delta"
+        return changed
+
     @property
     def operator_password_set(self):
         return bool(self.operator_password)
@@ -146,12 +220,20 @@ class Config:
         return out
 
     def storage_public(self):
-        """What the operator page says about where rows are going."""
+        """What the operator page says about where rows are going.
+
+        `mode` is the mode IN FORCE and stays the key a deploy verifier reads. `declared` is what app.yaml
+        asked for, and the two differ exactly when an operator has pointed a manual install at a table.
+        """
+        common = {"declared": self.storage_mode_declared,
+                  "source": self.sources.get("log_table"),
+                  "pinned_by_env": bool(self.log_table_env),
+                  "conflict_with_env": getattr(self, "log_table_conflict", None)}
         if self.storage_mode == "local":
             return {"mode": "local", "target": self.local_db_path, "table": self.local_db_table,
-                    "ephemeral": True}
+                    "ephemeral": True, **common}
         return {"mode": "delta", "target": self.log_table, "warehouse_id": self.warehouse_id,
-                "ephemeral": False}
+                "ephemeral": False, **common}
 
     def public(self):
         return {"build": self.build, "season_id": self.season_id,

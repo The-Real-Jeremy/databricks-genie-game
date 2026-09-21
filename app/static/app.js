@@ -1313,6 +1313,8 @@ function lbTable(title, rows, you, counts) {
 }
 
 async function loadOperator() {
+  loadSetup();          // its own payload, and deliberately not awaited — a slow settings read
+                        // must not hold up the release list, and each card renders its own failure.
   const s = await api("/api/settings").catch(e => ({ error: e.message }));
   const rows = $("#releaseRows");
   rows.innerHTML = "";
@@ -1371,7 +1373,8 @@ function statsHtml(st) {
   if (store.mode === "local") {
     bits.push(`local SQLite — <code>${esc(store.target || "?")}</code>`);
     // ⭐ Said where a human reads it, not left to be discovered after a redeploy.
-    bits.push(`<b>ephemeral</b>: a restart or redeploy loses this file — export regularly, restore below`);
+    bits.push(`<b>ephemeral</b>: a stop/start loses this file (measured), and any other container
+      replacement can — export regularly, restore below, or give the app a table`);
   } else {
     bits.push(`Delta table — <code>${esc(store.target || st.table || "?")}</code>`);
   }
@@ -1637,6 +1640,241 @@ async function saveClientMsg() {
 }
 
 
+/* ══ THE TWO SETUP CARDS: the Genie space, and where the rows go ════════════════════════════
+ * Everything here renders from ONE server payload (/api/operator/config) and re-renders from the copy the
+ * mutating endpoints hand back in `config`. There is deliberately no client-side idea of the current
+ * state: the mode, the table, the provenance of each setting and whether the settings file is even
+ * writable are all the server's answers, and a page holding its own copy would eventually disagree with
+ * the app that is actually writing the rows.
+ */
+let OPCFG = null;
+
+function opWarn(html) { return `<p class="warn small">${html}</p>`; }
+
+function renderSetup(cfg) {
+  OPCFG = cfg || OPCFG;
+  const c = OPCFG;
+  if (!c || !$("#storageBanner")) return;
+  const st = c.storage || {}, dur = c.durable || {}, g = c.genie || {};
+
+  /* ── the banner. THREE states, and the third is the reason it exists ─────────────────────────────
+     1. delta -> a quiet confirmation;
+     2. local -> loud: these scores do not survive a restart;
+     3. local AND a previous install of this app name had a table -> louder, and NAMES the table.
+        That third case is a deleted-and-recreated app: the settings live under the app's own service
+        principal and a recreate mints a new one (measured — same name, new client id), so the pointer is
+        orphaned and the app comes up ephemeral while the rows sit in Delta. Nothing in the primary store
+        can tell that from a fresh install, which is exactly why a breadcrumb keyed by APP NAME exists. */
+  const bn = $("#storageBanner");
+  const prev = dur.previous_install;
+  bn.hidden = false;
+  if (st.mode === "delta") {
+    bn.className = "setupbanner good";
+    bn.innerHTML = `<b>Scores are persistent.</b> Rows go to <code>${esc(st.target || "?")}</code>` +
+      /* ⚠️ "from this deployment's environment", NOT "from app.yaml". The table can reach the environment
+         two ways — a literal in app.yaml, or the `log-table` app RESOURCE that app.yaml resolves it from —
+         and a reader who took the resource route never opened app.yaml, so naming only that file sends
+         them to the wrong place. The app cannot tell the two apart from an env var alone. */
+      (st.source === "operator" ? " (set on this page)."
+        : " (set by this deployment's configuration, not here).");
+  } else if (prev && prev.log_table_fqn) {
+    bn.className = "setupbanner bad";
+    bn.innerHTML = `<b>This app was logging to <code>${esc(prev.log_table_fqn)}</code> and is not any ` +
+      `more.</b> That setting belonged to a service principal which no longer exists — what happens when ` +
+      `an app is deleted and re-created — so this deployment has come up on its temporary local database ` +
+      `while those rows sit in the table. <b>Nothing is lost:</b> put the same table back in the box below ` +
+      `and the game picks up where it was.`;
+  } else {
+    bn.className = "setupbanner bad";
+    bn.innerHTML = `<b>Scores are temporary.</b> This app keeps its activity log in a file inside its own ` +
+      `container (<code>${esc(st.target || "")}</code>). <b>Stopping and starting the app deletes it</b> — ` +
+      `measured, 8 rows to 0 — and so can anything else that replaces the container. Players would come ` +
+      `back to an empty game. Give it a Unity Catalog table below, or download the CSV before anything ` +
+      `restarts.`;
+  }
+
+  /* ── the Genie space card ───────────────────────────────────────────────────────────────────── */
+  const resolved = g.resolved || {};
+  const where = g.source === "operator" ? "set on this page"
+    : (g.pack_title ? "the shipped default" : "app.yaml");
+  $("#genieNow").innerHTML =
+    `Asking <b>${esc(g.title_in_force || "(none)")}</b> <span class="muted">(${esc(where)})</span>` +
+    (g.space_id_in_force ? ` <span class="muted small">id ${esc(g.space_id_in_force)}</span>` : "") +
+    (resolved.status === "resolved"
+      ? ` · <b class="tone-good">answered at least once</b>`
+      : resolved.status === "unresolved_error"
+        ? ` · <b class="tone-bad">${esc(resolved.error || "could not be found")}</b>`
+        : ` · <span class="muted">not asked yet — a space is resolved on the first question, so this ` +
+          `says nothing either way</span>`);
+  if (!$("#genieSpaceInput").value) $("#genieSpaceInput").value = g.title_in_force || "";
+
+  /* ── the storage card ──────────────────────────────────────────────────────────────────────── */
+  const rows = c.rows_now;
+  $("#storageNow").innerHTML = st.mode === "delta"
+    ? `Delta table <code>${esc(st.target)}</code> through warehouse <code>${esc(st.warehouse_id || "?")}</code>.`
+    : `Local database <code>${esc(st.target)}</code>${(rows !== null && rows !== undefined)
+        ? ` — ${rows} row(s) in it now` : ""}.`;
+  $("#storageClear").hidden = !(st.mode === "delta" && st.source === "operator");
+  const inp = $("#storageInput");
+  if (!inp.value && st.mode === "delta") inp.value = st.target || "";
+  if (!inp.value && prev && prev.log_table_fqn) inp.value = prev.log_table_fqn;
+
+  let notes = "";
+  if (st.pinned_by_env) {
+    inp.disabled = true;
+    $("#storageCheck").disabled = $("#storageSave").disabled = true;
+    notes += opWarn(`This deployment's table comes from its own configuration ` +
+      `(<code>LOG_TABLE_FQN</code>), so it cannot be changed from here. That is either a value in ` +
+      `<code>app.yaml</code> or the <code>log-table</code> app resource that <code>app.yaml</code> reads it ` +
+      `from — change it wherever it is set and redeploy the app. The precedence is deliberate: a stored ` +
+      `setting able to override a deploy would send a customer's rows somewhere a redeploy does not put ` +
+      `back.`);
+  }
+  if (st.conflict_with_env) {
+    notes += opWarn(`A saved setting names <code>${esc(st.conflict_with_env)}</code> while ` +
+      `<code>app.yaml</code> names <code>${esc(st.target)}</code>. <b>app.yaml is winning.</b> Remove one ` +
+      `of the two, so the next person does not read two answers.`);
+  }
+  if (!c.warehouse_id) {
+    notes += opWarn(`This app has <b>no SQL warehouse</b>, so it cannot reach Unity Catalog at all. Add ` +
+      `one under <b>Compute → Apps → this app → Edit → App resources → SQL warehouse (CAN USE)</b> and ` +
+      `come back. Players can still ask the genie — that runs on their identity, not the app's.`);
+  }
+  if (dur.state === "denied" || dur.state === "error" || dur.state === "unavailable") {
+    notes += opWarn(`⛔ <b>Settings cannot be stored on this deployment.</b> ${esc(dur.detail || "")} ` +
+      `Anything set here would work until the app restarts and then be forgotten — the one failure worth ` +
+      `refusing outright, so the table will not be switched until this is fixed.`);
+  } else {
+    notes += `<p class="muted small">Settings live in the workspace at ` +
+      `<code>${esc(dur.path || "")}</code>${dur.set_at ? ` (last written ${esc(dur.set_at)}` +
+      `${dur.set_by ? " by " + esc(dur.set_by) : ""})` : ""}. An admin can read, back up and audit that ` +
+      `file, which is not true of anything inside the container.</p>`;
+  }
+  (c.switches || []).slice().reverse().forEach(s => {
+    if (s.warn) notes += opWarn(esc(s.warn));
+    else if (s.to) notes += `<p class="muted small">Switched ${esc(s.from.mode)} → ${esc(s.to.mode)} at ` +
+      `${esc(s.at)}${s.rows_carried ? `, carrying ${s.rows_carried} existing row(s) across` : ""}.</p>`;
+  });
+  $("#storageMsg").innerHTML = notes;
+
+  const ins = c.instructions || {};
+  $("#storageHowBody").innerHTML =
+    `<p class="small"><b>1 · Create the table</b> — paste this into a SQL editor:</p>` +
+    `<pre class="sqlbox">${esc(ins.create_sql || "")}</pre>` +
+    `<p class="small"><b>2 · Let this app write to it.</b> Two routes, and they are not equivalent:</p>` +
+    `<ol class="small">${(ins.resource_route || []).map(s => `<li>${esc(s)}</li>`).join("")}</ol>` +
+    opWarn(esc(ins.resource_route_caveat || "")) +
+    `<p class="small">${esc(ins.sql_route_note || "")}</p>` +
+    `<pre class="sqlbox">${esc(ins.grant_sql || "")}</pre>` +
+    `<p class="muted small">This app's service principal is <code>${esc(ins.principal || "")}</code>. That ` +
+    `is the name Unity Catalog records, so grant to it rather than to the display name.</p>`;
+}
+
+async function loadSetup() {
+  try { renderSetup(await api("/api/operator/config")); }
+  catch (e) { $("#storageMsg").innerHTML = opWarn(esc(e.message)); }
+}
+
+/* The Genie test asks a REAL question, so it takes as long as a real question does (9-22s, workspace
+   dependent). The buttons stay disabled meanwhile and the page says why: a control that looks idle during
+   a 15-second call gets pressed again, and the second press spends another Genie question. */
+async function genieSpaceAction(kind) {
+  const btns = ["#genieSpaceTest", "#genieSpaceSave", "#genieSpaceClear"];
+  const msg = $("#genieSpaceMsg");
+  btns.forEach(b => $(b).disabled = true);
+  msg.innerHTML = kind === "clear" ? `<p class="muted small">clearing…</p>`
+    : `<p class="muted small">asking the genie a real question — as long as a player's question takes,
+       usually 10-25 seconds…</p>`;
+  try {
+    const body = kind === "clear"
+      ? { clear: true, save: true }
+      : { value: $("#genieSpaceInput").value.trim(), test: true, save: kind === "save" };
+    const r = await api("/api/operator/genie-space", body, 240000);
+    let out = "";
+    if (r.cleared) out += `<p class="small tone-good">Cleared — back to whatever app.yaml names.</p>`;
+    if (r.stage === "resolve") {
+      out += opWarn(esc(r.error || "that space could not be found"));
+      if (r.spaces && r.spaces.length) out += `<p class="muted small">Spaces you can see: ` +
+        r.spaces.map(s => `<code>${esc(s)}</code>`).join(", ") + `</p>`;
+    }
+    const t = r.test;
+    if (t) {
+      out += `<p class="small"><b>Asked:</b> ${esc(t.asked)}</p>`;
+      if (t.ok) {
+        out += `<p class="small"><b>Answered in ${esc(String(t.elapsed_s))}s:</b> ` +
+               `${esc(t.answer || "(no text)")}</p>`;
+        /* ⭐ THE VERDICT IS THE SERVER'S AND THE EXPECTED VALUE IS NOT IN THIS PAYLOAD. It is the answer
+           key; nothing this app sends to a browser carries one, password-gated page included. */
+        if (t.matches_expected === true) out += `<p class="small tone-good">That is the value week 1's ` +
+          `first blank wants, so the space is pointed at the right data.</p>`;
+        else if (t.matches_expected === false) out += opWarn(
+          `The space answered, but not with the value week 1 expects. It is probably reading different ` +
+          `tables — check it has the five <code>samples.bakehouse</code> tables and the instruction ` +
+          `paragraph from the content pack.`);
+        if (t.attributed_to_viewer === false) out += opWarn(
+          `Genie did not attribute that answer to you, which should be impossible on the viewer path — ` +
+          `worth a look before players use it.`);
+      } else {
+        out += opWarn(esc(t.error || "no answer"));
+      }
+    }
+    if (r.saved) out += `<p class="small tone-good">Saved — it survives a restart.</p>`;
+    if (r.warning) out += opWarn(esc(r.warning));
+    msg.innerHTML = out || `<p class="muted small">nothing to report</p>`;
+    if (r.config) renderSetup(r.config);
+    if (kind !== "test") { S.game = await api("/api/game?week=" + S.week); render(); }
+  } catch (e) {
+    msg.innerHTML = opWarn(esc(e.message));
+  } finally {
+    btns.forEach(b => $(b).disabled = false);
+  }
+}
+
+function checkLines(chk) {
+  const rows = (chk.steps || []).map(s =>
+    `<li>${s.ok ? "✔" : "✘"} ${esc(s.step)}${s.error ? " — " + esc(s.error) : ""}</li>`).join("");
+  return rows ? `<ul class="small checksteps">${rows}</ul>` : "";
+}
+
+async function storageAction(action) {
+  const btns = ["#storageCheck", "#storageSave", "#storageClear"];
+  /* ⛔ #storageResult, NOT #storageMsg. renderSetup() owns #storageMsg and rewrites it from the payload
+     this very function fetches — so writing the check's answer there and then re-rendering wiped it about
+     a second later. The operator pressed Check and saw the answer replaced by a note about where settings
+     are stored, which reads as the check having done nothing at all. Two owners, two elements. */
+  const msg = $("#storageResult");
+  btns.forEach(b => $(b).disabled = true);
+  msg.innerHTML = `<p class="muted small">${action === "clear" ? "switching back…"
+    : "checking that table as the app itself — a read, and one audit row written…"}</p>`;
+  try {
+    const r = await api("/api/operator/storage",
+                        { action, table: $("#storageInput").value.trim() }, 180000);
+    let out = "";
+    const chk = r.check || {};
+    if (chk.status) {
+      out += chk.ok ? `<p class="small tone-good">${esc(chk.message || "usable")}</p>`
+                    : opWarn(`<b>${esc(chk.status)}</b> — ${esc(chk.message || "not usable")}`);
+      out += checkLines(chk);
+      if (chk.rows_existing) out += `<p class="small">It already holds <b>${chk.rows_existing}</b> ` +
+        `row(s)` + (chk.players_existing ? ` from <b>${chk.players_existing}</b> player(s)` : "") +
+        ` — the game picks up from there.</p>`;
+      if (chk.delete_warning) out += opWarn(esc(chk.delete_warning));
+    }
+    if (r.error) out += opWarn(esc(r.error));
+    if (r.switch && r.switch.ok) out += `<p class="small tone-good">Now writing to ` +
+      `<code>${esc(r.switch.to.table)}</code>` + (r.switch.rows_carried
+        ? `, and ${r.switch.rows_carried} row(s) were copied across from the local database` : "") +
+      `. No restart needed.</p>`;
+    msg.innerHTML = out;
+    if (r.config) renderSetup(r.config);
+    if (action !== "check") { await loadOperator(); loadLogs(); }
+  } catch (e) {
+    msg.innerHTML = opWarn(esc(e.message));
+  } finally {
+    btns.forEach(b => $(b).disabled = false);
+  }
+}
+
 /* ══ The operator unlock wall ═══════════════════════════════════════════════════════════
  * Three states, and the third is the one that is easy to forget:
  *   unlocked                  -> show the operator content
@@ -1723,6 +1961,14 @@ $("#newChatBtn").addEventListener("click", () => newChat(false));
 $("#unlockBtn").addEventListener("click", unlock);
 $("#releaseSave").addEventListener("click", saveRelease);
 $("#clientMsgSave").addEventListener("click", saveClientMsg);
+// the two setup cards. Each button names what it does and nothing happens on typing — a fetch per
+// keystroke against Unity Catalog told a user "you cannot use `main.bake_o`" about a half-typed name once.
+$("#genieSpaceTest").addEventListener("click", () => genieSpaceAction("test"));
+$("#genieSpaceSave").addEventListener("click", () => genieSpaceAction("save"));
+$("#genieSpaceClear").addEventListener("click", () => genieSpaceAction("clear"));
+$("#storageCheck").addEventListener("click", () => storageAction("check"));
+$("#storageSave").addEventListener("click", () => storageAction("save"));
+$("#storageClear").addEventListener("click", () => storageAction("clear"));
 $("#opLockForm").addEventListener("submit", opUnlock);
 $("#logPrev").addEventListener("click", () => { if (LOGS.page > 1) { LOGS.page--; loadLogs(); } });
 $("#logNext").addEventListener("click", () => { if (LOGS.page < LOGS.pages) { LOGS.page++; loadLogs(); } });

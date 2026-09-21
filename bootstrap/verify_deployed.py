@@ -243,7 +243,7 @@ def main():
         print(f"[verify]    storage · mode={got_mode} target={got.get('target')!r} "
               f"ephemeral={got.get('ephemeral')}")
         if got_mode == "local":
-            print("[verify]    storage · ⚠️  LOCAL MODE IS EPHEMERAL — a restart or redeploy loses the "
+            print("[verify]    storage · ⚠️  LOCAL MODE IS EPHEMERAL — a stop/start loses the "
                   "activity log. Export from the Operator page to keep it.")
 
     # ── CODE IDENTITY, against the SYNCED ARTEFACT. Retried, because a container that has just restarted

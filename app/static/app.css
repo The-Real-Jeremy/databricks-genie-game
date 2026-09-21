@@ -918,3 +918,29 @@ table.lbt .who-tag {
 .oplock input[type="password"]:focus {
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
 }
+
+/* ---------------------------------------------------------------- the two setup cards
+   The Operator page's own configuration surface. ⛔ THE BANNER IS THE LOUDEST THING ON THE PAGE ON
+   PURPOSE: a deployment in local mode is holding every score in a file the next restart deletes, and that
+   failure presents as an EMPTY GAME, which nobody can tell apart from a broken install. It uses the same
+   bad/good tokens as a wrong or right answer, so it reads as the same kind of statement everywhere. */
+.setupbanner {
+  border-radius: var(--r); padding: 11px 14px; font-size: 13.5px; margin: 0 0 12px;
+  border: 1px solid var(--line); background: var(--bg-2);
+}
+.setupbanner.bad  { background: var(--bad-soft);  color: var(--bad);  border-color: var(--bad); }
+.setupbanner.good { background: var(--good-soft); color: var(--good); border-color: var(--good); }
+.setupbanner code, .view .warn code { font-family: var(--mono); font-size: 0.95em; }
+#setupCards .tone-good { color: var(--good); }
+#setupCards .tone-bad  { color: var(--bad); }
+/* A DDL and three GRANTs are meant to be copied, so they must be selectable and readable rather than
+   wrapped into nonsense — hence their own horizontal scroll rather than the page getting one. */
+.sqlbox {
+  font-family: var(--mono); font-size: 12px; line-height: 1.45; white-space: pre;
+  overflow-x: auto; max-height: 260px; overflow-y: auto; background: var(--bg-2);
+  border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; margin: 6px 0 12px;
+}
+.checksteps { margin: 4px 0 8px; padding-left: 18px; }
+.checksteps li { margin: 2px 0; }
+#storageHow summary { cursor: pointer; font-size: 13px; }
+#genieSpaceInput, #storageInput { min-width: 280px; flex: 1 1 280px; }

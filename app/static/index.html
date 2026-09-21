@@ -316,8 +316,76 @@
          1280x720, since the activity log grows between them. The destructive control STAYS LAST (that is
          the right place for it); this is how it becomes findable without being moved. The round it belongs
          to started with a human looking for this button and not finding it. -->
-    <p class="muted small" id="opJump">On this page: release weeks · the activity log and its CSV · restore
+    <p class="muted small" id="opJump">On this page: <a href="#setupCards">set up this deployment</a> ·
+      release weeks · the activity log and its CSV · restore
       from an export · <a href="#opResetPanel">reset the game</a> (deletes everyone's progress).</p>
+
+    <!-- ══ SETTING UP A DEPLOYMENT THAT WAS INSTALLED BY HAND ══════════════════════════════════
+         THE REQUIREMENT: once somebody has installed this by hand they come here, point at the right Genie
+         space, and — if they want persistent storage — name the catalog.schema.table to use.
+
+         These two cards are the whole no-CLI configuration surface. Both settings are stored in the
+         WORKSPACE (see app/lib/durable.py) rather than in the activity log, because in local mode that log
+         is a SQLite file inside the container — a pointer saying where the rows live cannot itself live
+         somewhere a restart erases.
+
+         ⛔ THE BANNER ABOVE THEM IS NOT DECORATION. A deployment in local mode holds every score in a file
+            the next restart deletes, and the way that failure presents is an EMPTY GAME — which is
+            indistinguishable from a broken install. So it is said in the loudest element on the page, once,
+            where the person who can fix it is already standing. -->
+    <div id="setupCards">
+      <div id="storageBanner" hidden></div>
+
+      <section class="card release" id="genieSpaceCard">
+        <h3>Genie space</h3>
+        <p class="muted small">Which Genie space the game asks. Paste its <b>title</b>, its <b>id</b>, or the
+          <b>URL</b> from your browser while you are looking at it — all three work. Testing asks it a real
+          question from week 1 and checks the answer, because nothing short of a question can tell a space
+          that works from one that merely exists.</p>
+        <p class="small" id="genieNow">…</p>
+        <div class="release-actions">
+          <!-- ⛔ WIRING, NOT BRANDING. The placeholder is the Genie space TITLE this app resolves by — the
+               same string as GENIE_SPACE_TITLE in app.yaml and `space_title` in the content pack. It must
+               NOT be rebranded with the product: a renamed title points the deployment at a space nobody
+               created, and it fails on a player's first question rather than at deploy time. -->
+          <input id="genieSpaceInput" placeholder="The Data Desk" maxlength="240" spellcheck="false">
+          <button class="btn" id="genieSpaceTest">Test</button>
+          <button class="btn" id="genieSpaceSave">Test &amp; save</button>
+          <button class="btn" id="genieSpaceClear">Clear</button>
+        </div>
+        <div id="genieSpaceMsg"></div>
+      </section>
+
+      <section class="card release" id="storageCard">
+        <h3>Where the rows go</h3>
+        <p class="small" id="storageNow">…</p>
+        <p class="muted small">To keep scores across a restart, give the app a Unity Catalog table. Type it
+          as <code>catalog.schema.table</code> and press Check: the app tries to read it and to write one
+          audit row <em>as itself</em>, and says exactly what is missing. A table that already holds rows is
+          picked up as it stands — the game reads its state from the table, so nothing is lost and nothing
+          is counted twice.</p>
+        <div class="release-actions">
+          <input id="storageInput" placeholder="catalog.schema.activity_log" maxlength="240"
+                 spellcheck="false">
+          <button class="btn" id="storageCheck">Check</button>
+          <button class="btn" id="storageSave">Check &amp; use it</button>
+          <button class="btn" id="storageClear" hidden>Back to local</button>
+        </div>
+        <!-- ⛔ TWO ELEMENTS, NOT ONE, AND THE REASON IS A DEFECT THAT ONLY LOOKING FOUND. `#storageMsg`
+             belongs to renderSetup(), which rewrites it from the server payload on every refresh;
+             `#storageResult` belongs to the button that was just pressed. With both in one element the
+             check ran, answered "Unity Catalog refused, you are missing USE CATALOG" — and was then
+             overwritten by the standing notes about where settings live, ~1 second later. The operator
+             pressed Check and watched the answer vanish. -->
+        <div id="storageResult"></div>
+        <div id="storageMsg"></div>
+        <details id="storageHow">
+          <summary>How to create the table, and how to let this app write to it</summary>
+          <div id="storageHowBody"></div>
+        </details>
+      </section>
+    </div>
+
     <section class="card release" id="releaseCard">
       <h3>Release weeks</h3>
       <p class="muted small">Tick a week to let every player unlock it. Nothing is scheduled — a week

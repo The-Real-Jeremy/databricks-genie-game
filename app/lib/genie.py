@@ -33,6 +33,51 @@ def _call(host, token, method, path, body=None, timeout=60, deadline=None):
         return -1, {"message": f"{type(e).__name__}: {e}"}
 
 
+def parse_space_ref(raw):
+    """What somebody pastes into the Operator page -> (space_id, title). At most one is filled.
+
+    ⭐ THREE SHAPES, because all three are what a person actually has to hand: the space's TITLE (what the
+    README tells them to name it), a bare space id, or the URL from the address bar while they are looking
+    at the space. Accepting only the title would mean the commonest thing in their clipboard — the URL —
+    silently becomes a title nobody created, and that failure would surface on a player's first question
+    instead of in front of the person pasting it.
+
+    A space id is a long hex string (Databricks writes them `01f1…`); a URL carries `/genie/rooms/<id>` or
+    `/genie/spaces/<id>`.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return "", ""
+    if "://" in s or s.startswith("/"):
+        parts = [p for p in s.split("?")[0].split("#")[0].split("/") if p]
+        for i, p in enumerate(parts):
+            if p in ("rooms", "spaces") and i + 1 < len(parts):
+                return parts[i + 1], ""
+        # A URL we cannot read is NOT a title. Returning it as one would look for a space called
+        # "https://…", and "no space has that title" points the reader in the wrong direction entirely.
+        return "", ""
+    bare = s.strip("`")
+    if len(bare) >= 20 and all(c in "0123456789abcdefABCDEF" for c in bare):
+        return bare.lower(), ""
+    return "", s
+
+
+def list_space_titles(host, token, limit=25):
+    """The titles this viewer can see — offered by the Operator page when a typed title matches nothing."""
+    st, body = _call(host, token, "GET", API)
+    if st != 200:
+        return []
+    return sorted({(s.get("title") or "?") for s in (body.get("spaces") or [])})[:limit]
+
+
+def space_meta(host, token, space_id):
+    """Title and description of one space, so a saved id can be shown to a human as a name."""
+    st, body = _call(host, token, "GET", f"{API}/{space_id}")
+    if st != 200:
+        return {}
+    return {"title": body.get("title"), "description": body.get("description")}
+
+
 def resolve_space(host, token, title, pinned_id=None):
     """Find the space by title so nothing has to be plumbed from deploy time into app config."""
     if pinned_id:

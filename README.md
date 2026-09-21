@@ -34,11 +34,12 @@ let you have:
 |---|---|---|---|
 | **A. Delta mode** (default) | a warehouse + a catalog you can create a schema in | Unity Catalog table | **yes** |
 | **B. Local mode** | a warehouse only | SQLite file in the app container | **no** — export/import instead |
-| **C. No DAB at all** | neither DAB nor the CLI (upload + point an app at it) | either of the above | per the mode you pick |
+| **C. No bundle, no CLI** | the UI and a SQL editor: upload a zip, create the app, point it at a space | starts local; a table is a setting, not a redeploy | **once you give it a table** |
 
 **Use A unless something stops you.** B exists for the workspace that will not give an app a writable
 table, and its trade is real: see *Local database mode* below. C exists because "we cannot deploy bundles"
-should not be the end of the conversation.
+should not be the end of the conversation — and it now reaches the same persistent Delta mode as A, from
+inside the app, with nobody editing a file.
 
 ### A. Delta mode — the default
 
@@ -136,8 +137,15 @@ all behave identically. Verified by running all 17 of the app's SQL statements u
 
 ### ⛔ What it costs, stated plainly
 
-**A Databricks Apps container has no persistent volume, so a restart or a redeploy loses the file.** Not
-"may lose" — will. This is the trade you are making in exchange for needing no table.
+**A Databricks Apps container has no persistent volume, so anything that replaces the container takes the
+file with it.** Measured: **stopping and starting the app took a database holding 8 rows back to an empty
+one**. This is the trade you are making in exchange for needing no table.
+
+⚠️ **And do not read that as "a code deploy is safe".** In the same session a `databricks apps deploy`
+*preserved* the file — which is exactly why this cannot be relied on: nothing on the page tells you which
+kind of restart you are getting, the platform can replace a container without being asked, and a file inside
+one is not something an admin can see, back up or audit. Treat it as "gone at any moment"; the guarantee is
+the export, or a table.
 
 So in local mode the **CSV export is the backup and the import is the restore**, and they are not a
 convenience — they are the whole durability story:
@@ -167,123 +175,198 @@ a current build and the problem does not exist.
 
 ---
 
-## C. No DAB: upload the repo and point an app at it
+## C. No bundle, no CLI: upload the repo and point an app at it
 
-For a workspace where bundles are not available. **This path is walked and verified, not theorised** — the
-steps below are the ones that were actually run, and the warnings are the things that actually bit.
+For a workspace where you cannot run bundles, or a person who does not have the CLI at all. Everything here
+happens in the Databricks UI and in a SQL editor.
 
-### What you need
-The Databricks UI, and either the CLI or the UI's own file upload. No bundle, no terraform, no notebook.
+**Five steps, and the last two are optional.** A manual install always starts in **local database mode** —
+scores kept in a file inside the app's container — and is pointed at a Unity Catalog table afterwards, from
+the app's own Operator page, if you want them to survive a restart.
 
-### Step 1 — put `app.yaml` in place. **This is the step everyone misses.**
+### Step 1 — download this repo as a zip and upload it
 
-A fresh clone has **no `app/app.yaml`**, because the DAB path generates it and it is gitignored. An app
-pointed at a source folder with no `app.yaml` starts with no command and no environment, and fails in a way
-that reads as broken code.
+On GitHub: **Code → Download ZIP**. In the Databricks UI: open your workspace folder (your own `Users`
+folder is fine), **Create / Import**, and drop the zip in — the workspace **unzips it on upload**.
 
-```bash
-cp deploy/manual/app.yaml app/app.yaml      # local mode
-# or, if you have a writable table:
-cp deploy/manual/app.delta.yaml app/app.yaml
-```
+You end up with a folder like `/Workspace/Users/you@example.com/databricks-genie-game-main/`, and the thing
+the app needs is the **`app` folder inside it**. Nothing has to be edited, moved or renamed — `app/app.yaml`
+is in the repo and works as shipped.
 
-**Nothing in it has to be edited.** It works as shipped: the operator page opens with the built-in
-default password (see *The operator password*). Set `OPERATOR_PASSWORD` if you want your own.
+⚠️ **If the upload lands as one file instead of a folder, unzip it on your own machine and drag the unzipped
+folder in.** The extraction is a feature of the UI's importer, not of the workspace itself: the equivalent
+API call stores the zip as an opaque 1.3 MB file, and an app pointed at that has no `app.py` to run. Either
+way what you need is a FOLDER whose top level holds `app.py` and `app.yaml`.
 
-### Step 2 — upload the `app/` folder to your workspace
+⚠️ **Check the upload actually landed everything** before you go on. `app/` has subfolders (`content`,
+`lib`, `static`, `static/art`, `theme`), and an upload that quietly stops short produces an app that starts
+and then fails on a missing file. Open `app/static/art` and confirm the images are there; that is the
+deepest folder and the one worth checking.
 
-```bash
-databricks workspace import-dir ./app /Workspace/Users/<you>/data-desk-src --overwrite
-```
+### Step 2 — create the app, with the `genie` scope
 
-Or drag the folder into the workspace file browser. **Upload the *contents* of `app/`** so that `app.py`
-and `app.yaml` sit at the top of the destination folder — not a nested `app/app.py`.
+**Compute → Apps → Create app**, then:
 
-⚠️ **Count the files afterwards.** `import-dir` prints `Import complete` and exits 0 even when it has
-uploaded nothing, and it can be cut short silently. So compare the two counts — and **derive both**, never
-read one off this page:
+* **Source code path** — the `app` folder from step 1 (the one holding `app.py` and `app.yaml`).
+* **User authorisation scopes** — tick **`genie`**. ⛔ **This is the one that is not optional.** The game
+  reaches Genie *as the signed-in player*, never as the app, and without this scope every question fails
+  while the app looks perfectly healthy.
+* **App resources** — nothing yet. Local mode needs no warehouse and no table.
 
-```bash
-git ls-files app | wc -l        # what a stock checkout holds, plus one for the generated app.yaml
-databricks workspace list /Workspace/Users/<you>/data-desk-src | wc -l      # per directory, so walk each
-```
+Deploy it. Each person who opens it completes the workspace sign-in and an **authorisation prompt once**,
+which is what grants that scope for them; the screen names what it is granting.
 
-This sentence used to name the figure. It said **22** while `app/` held **32** — it went stale the first time
-anyone added an image, which is precisely the failure this check exists to catch.
+### Step 3 — create the Genie space
 
-### Step 3 — create the app **with the `genie` scope**
+This is the one thing that cannot be created for you, and **the app will look completely healthy without
+it** — every page renders, the log works, and the first player to ask anything gets nothing.
 
-The game reaches Genie *as the signed-in viewer*, which needs a non-default scope. The UI's create form may
-not offer it, so create the app with the API body:
+In the Genie UI, make a space with:
 
-```bash
-databricks apps create --json '{
-  "name": "data-desk",
-  "description": "The Genie Bake-Off — a four-week Genie game.",
-  "user_api_scopes": ["genie"]
-}'
-```
-
-(`deploy/manual/create-app.json` is this file, ready to edit.) Verify it took:
-`databricks apps get data-desk` must show `user_api_scopes: ["genie"]`. **Without it every question fails**
-even though the app looks perfectly healthy.
-
-### Step 4 — deploy the app at that path
-
-```bash
-databricks apps deploy data-desk --source-code-path /Workspace/Users/<you>/data-desk-src
-```
-
-### Step 5 — ⛔ create the Genie space. **The app will look fine without it and fail on the first question.**
-
-This is the one the DAB path does for you in its post-deploy hook, and the one a manual deploy silently
-skips. After step 4 the app starts, `/api/health` reports `ok: true` with `missing_config: []`, every page
-renders, the operator log works — and the first player to ask anything gets nothing, because there is no
-space to ask.
-
-Either run the bundle's own bootstrap, which in local mode creates **only** the space:
-
-```bash
-STORAGE_MODE=local APP_NAME=data-desk WAREHOUSE_ID=<id> \
-  SEASON_ID=s1_letters SEASONS=s1_letters SPACE_SUFFIX=none \
-  AUDIENCE_GROUP=users python3 bootstrap/bootstrap.py
-```
-
-…or build it by hand in the Genie UI, which needs no tooling at all:
-
-* **Title:** exactly `The Data Desk` — the app finds its space **by title**, so the title *is* the wiring.
-  If you set `GENIE_SPACE_SUFFIX` in `app.yaml` to anything but `none`, the title must carry that suffix
-  too.
+* **Title:** `The Data Desk`, or anything you like — you will point the app at it in step 4, so the name is
+  yours to choose.
 * **Tables:** these five, and only these —
   `samples.bakehouse.media_customer_reviews`, `samples.bakehouse.sales_customers`,
   `samples.bakehouse.sales_franchises`, `samples.bakehouse.sales_suppliers`,
   `samples.bakehouse.sales_transactions`
-* **Instructions:** paste the five paragraphs from `space_instructions` in
-  `app/content/s1_letters.json` as **one** instruction. (They must be one: separate paragraphs come back
-  glued together, and a string containing a blank line is silently truncated at the first newline.)
-* Grant the players' group `CAN_RUN`.
+* **Instructions:** paste the paragraphs from `space_instructions` in `app/content/s1_letters.json` as
+  **one** instruction. (They must be one: separate paragraphs come back glued together, and a string
+  containing a blank line is silently truncated at the first newline.)
+* Give your players' group **CAN RUN** on it.
 
-### Step 6 — verify, and verify the *space* specifically
+### Step 4 — open the app, unlock Operator, and point it at your space
+
+Open the app, go to **Operator**, and enter the password (out of the box it is the built-in default — see
+*The operator password*). The first card is **Genie space**.
+
+Paste the space's **title**, its **id**, or the **URL** from your browser while you are looking at it; any of
+the three works. Then press **Test & save**.
+
+⭐ **The test asks your space a real question** — week 1's first blank — as you, through exactly the path a
+player's question takes, and checks the answer against the value that blank expects. That is the only thing
+that can tell a working space from one that merely exists: the space resolves **lazily and by title**, so
+until somebody asks something, "the space is fine" and "there is no space at all" look identical from every
+health check in the product.
+
+What it tells you, and what to do about it:
+
+| what you see | what it means |
+|---|---|
+| answered, and it is the value week 1 wants | done — the space is right |
+| answered, but not that value | the space is reading different tables; check the five above and the instruction |
+| no space with that title | it lists the spaces you *can* see, so you can pick the name off that list |
+| the space did not answer | a Genie or warehouse problem, not an app one — the message is Genie's own |
+
+That setting is stored **in your workspace**, not in the app's container, so it survives a restart and a
+redeploy. The card names the exact path it wrote to.
+
+**At this point the game is fully playable.** Release a week (**Operator → Release weeks**) and people can
+play. Everything below is about keeping the scores.
+
+### Step 5 (optional) — make the scores persistent
+
+Out of the box the activity log is a SQLite file inside the app's container, and **stopping and starting
+the app deletes it** — measured, 8 rows to 0 — as can anything else that replaces the container. The Operator page says so in its loudest element, because the way that failure presents is an
+*empty game*, which nobody can tell apart from a broken install.
+
+To keep scores, give the app a Unity Catalog table. Three things, in this order:
+
+**1 · Create the table.** The Operator page prints the exact `CREATE TABLE` under *"How to create the table,
+and how to let this app write to it"* — it is generated from the same schema the app writes, so it cannot
+drift from it. Paste it into a SQL editor. Any schema you can create tables in will do.
+
+**2 · Let the app write to it.** Two routes, and **they are not equivalent**:
+
+* **Add the table as an app resource** (recommended, no SQL). **Compute → Apps → your app → Edit → App
+  resources → Add resource → Unity Catalog table**, pick your table, and give it **SELECT** and **MODIFY**
+  (add it twice if the form takes one permission at a time). Add a second resource of type **SQL warehouse**
+  with **CAN USE** — the app needs one to reach Unity Catalog at all. Databricks then grants the app's
+  service principal `SELECT` and `MODIFY` on the table, `USE SCHEMA` on its schema and **`USE CATALOG` on
+  its catalog**, which is more than the bundle path can do for itself.
+
+  ⛔ **This removes the SQL step. It does not remove the permission requirement.** Those grants are issued
+  **as you**, so whoever adds the resource still has to be the catalog's **owner** or hold **MANAGE** on it.
+  If you are neither, the UI cannot do it for you either: the catalog's owner has to add the resource, or run
+  the grants below. Owning the table is not enough, because `USE CATALOG` is a catalog-level privilege.
+
+  ⚠️ And an accepted resource is not a conferred privilege — the API will accept a table it cannot actually
+  grant on. Step 3 is what settles it.
+
+* **Or run three grants yourself.** The Operator page prints them with your app's own service principal
+  already substituted. The first one is the one that needs the catalog owner:
+
+  ```sql
+  GRANT USE CATALOG ON CATALOG <catalog>   TO `<the app's service principal>`;
+  GRANT USE SCHEMA  ON SCHEMA  <cat>.<sch> TO `<the app's service principal>`;
+  GRANT SELECT, MODIFY ON TABLE <cat>.<sch>.<tbl> TO `<the app's service principal>`;
+  ```
+
+**3 · Type the table into the Operator page and press *Check & use it*.** The app then, **as itself** rather
+than as you, reads the table, counts what is in it, writes one audit row and proves it can delete. It tells
+you which of these is true:
+
+| what it says | what to do |
+|---|---|
+| readable and writable | it switched — no restart, no redeploy |
+| no SQL warehouse | add the warehouse resource above |
+| Unity Catalog refused | the message is UC's own and names the missing privilege |
+| no such table | create it with the printed DDL |
+| missing columns | it lists them; point at a different table or add them |
+
+It has to be the **app's** identity that checks. An operator with `MANAGE` on the catalog passes every check
+while the app still cannot write a row, and that deployment serves every page, scores nothing and shows an
+empty leaderboard.
+
+**A table that already holds rows is picked up exactly as it stands** — every score, unlock and clock in
+this game is derived from the log rather than stored beside it, so pointing at last month's table brings
+last month's game back. And anything already in the temporary local database is copied across on the switch,
+so a player who answered before you did this is not wiped by it.
+
+### ⛔ If you delete the app and create it again, tell the Operator page your table again
+
+A recreated app gets a **new service principal**, and the settings above are stored under the old one. The
+new app cannot read them, so it comes up in local mode. **Nothing is lost** — the rows are in your table —
+and the Operator page will tell you which table it used to write to, because a deployment that quietly comes
+up empty is indistinguishable from a broken one. Put the table back in the box and it resumes.
+
+### With the CLI, if you have it
+
+The same install, shorter:
+
+```bash
+databricks apps create --json @deploy/manual/create-app.json      # the `genie` scope, in one line
+databricks workspace import-dir ./app /Workspace/Users/<you>/bake-off-src --overwrite
+databricks apps deploy <app-name> --source-code-path /Workspace/Users/<you>/bake-off-src
+```
+
+⚠️ `import-dir` prints `Import complete` and exits 0 even when it has uploaded nothing, and it can be cut
+short silently. **Compare counts** rather than trusting it, and derive both rather than reading a number off
+this page:
+
+```bash
+git ls-files app | wc -l
+databricks workspace list /Workspace/Users/<you>/bake-off-src        # per directory, so walk each
+```
+
+This paragraph used to name the figure. It said **22** while `app/` held **32** — it went stale the first
+time anybody added an image, which is exactly the failure the check exists to catch.
+
+### Checking it from outside
 
 ```bash
 curl -H "Authorization: Bearer $(databricks auth token | jq -r .access_token)" \
   https://<app-url>/api/health
 ```
 
-Check **four** things, and check the status code before reading the body:
+Check the status code before reading the body, then four things:
 
 * `"missing_config": []` — the environment arrived
-* `"storage": {"mode": "local"|"delta", …}` — the mode you intended
+* `"storage": {"mode": …}` — `local`, or `delta` with your table once you have switched
 * `"weeks": 4, "blanks": 20` — the content pack loaded
-* then **ask one question in the app**, and re-check `/api/health`: `genie_space.id` must now be filled
-  in, and it must be **your** space.
-
-That last one matters more than it looks. Space resolution is **lazy** — `genie_space` is empty until the
-first question, so a fresh health check cannot tell "no space exists" from "nobody has asked yet". And
-because resolution is **by title**, an app in a workspace that already has a space with that title will
-silently bind to *that* one. Exactly that happened on the verification run of this path: the app worked
-first time because a space named `The Data Desk` was already present from an earlier deploy. Read the
-resolved id and confirm it is the space you made.
+* `genie_space.status` — and read it as three states, not two. `not_resolved_yet` is **not a fault**: the
+  space is resolved on the first question, so a fresh container reports it whether or not the space exists.
+  `/api/health` deliberately asks Genie nothing, because a question is the number this product exists to
+  move. **Only a real question proves Genie works**, which is what the Operator page's Test button is for.
 
 ---
 
@@ -321,10 +404,16 @@ releases week 1 and waits for a human.
 
 ## Configuration
 
-On the DAB path every value is a bundle variable and there is **no `app.yaml` to edit** — it is generated
-per target by the predeploy hook and is gitignored, so a stale copy can never be committed and deployed to
-the wrong target. On the **no-DAB path you edit `app.yaml` directly**; see path C, and start from
-`deploy/manual/app.yaml`.
+On the DAB path every value is a bundle variable and there is **no `app.yaml` to edit** — the predeploy hook
+generates it per target and **overwrites the committed copy**, so after a bundle deploy your tree shows
+`app/app.yaml` as modified. That copy carries the deployment's real password: `git checkout app/app.yaml`
+rather than committing it.
+
+On the **no-bundle path nothing has to be edited at all.** `app/app.yaml` is committed in local mode and
+works as shipped, and the two settings a hand-installed deployment actually needs — the Genie space and the
+log table — are set on its own Operator page and stored **in your workspace**, so they survive a restart.
+Editing the file is still available if you would rather; the table set there **wins** over the page, and the
+page says so rather than accepting a value it will not use.
 
 | variable | default | what it does |
 |---|---|---|
@@ -366,7 +455,7 @@ DATABRICKS_CONFIG_PROFILE=<your-profile> databricks bundle deploy -t customer \
   --var operator_password='choose-something'
 ```
 
-On the **no-DAB path**, set `OPERATOR_PASSWORD` in `app/app.yaml` (see `deploy/manual/app.yaml`).
+On the **no-bundle path**, set `OPERATOR_PASSWORD` in `app/app.yaml` before you upload it.
 
 ### ⚠️ Where your password ends up — it is not in git, and it *is* in your workspace
 
@@ -393,9 +482,10 @@ have, which is a trade worth making if your threat model includes people with wo
 
 ### A password ALWAYS deploys, and `none` means "use the built-in default"
 
-**You do not have to set anything.** `none` — the value in the bundle, and what `deploy/manual/app.yaml`
-ships with — resolves to a **built-in default password** in `app/lib/config.py`. So a one-line deploy, and
-the no-DAB route where nobody edits a file, both come up with an operator page somebody can actually open.
+**You do not have to set anything.** `none` — the value in the bundle, and what the committed
+`app/app.yaml` ships with — resolves to a **built-in default password** in `app/lib/config.py`. So a one-line
+deploy, and the no-bundle route where nobody edits a file, both come up with an operator page somebody can
+actually open.
 
 ⛔ **That default is PUBLIC by construction.** It is in this repo. It gates **players** wandering into the
 operator page; it is not a secret from anyone who can read the repo or the workspace. Override it per

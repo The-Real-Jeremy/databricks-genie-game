@@ -25,8 +25,15 @@ SEASON_FILTER = "AND season_id = :season_id"
 # above. AND because the reset PRESERVES the meta types, its own marker row SURVIVES the wipe it records:
 # the operator page can therefore say when the last reset happened and who pressed it. A reset with no trace
 # is indistinguishable from data loss the next time somebody asks where the scores went.
-META_EVENT_TYPES = ("admin_setting", "import_receipt", "admin_reset")
-NOT_ADMIN = "event_type NOT IN ('admin_setting', 'import_receipt', 'admin_reset')"
+# ⭐ `admin_storage` JOINED IT IN , the same shape for the third time. The operator page can now point the
+# app at a Unity Catalog table, and it proves the table is writable by inserting ONE row before switching —
+# that row is configuration history, not a person playing. Meta for both reasons above: it must not inflate
+# the `players` denominator, and it must survive a reset so the table itself records who pointed the game at
+# it and when.
+# ⛔ AND THE SQL IS NOW DERIVED FROM THE TUPLE rather than typed out a second time. Adding a name meant
+# editing two places, and the copy that gets missed is a meta row silently counted as a player.
+META_EVENT_TYPES = ("admin_setting", "import_receipt", "admin_reset", "admin_storage")
+NOT_ADMIN = "event_type NOT IN (" + ", ".join("'%s'" % t for t in META_EVENT_TYPES) + ")"
 
 
 def last_reset(table):

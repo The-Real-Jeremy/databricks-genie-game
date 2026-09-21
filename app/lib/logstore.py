@@ -188,11 +188,24 @@ class LogStore:
 
            So: set the flag, then JOIN. `flush_interval` is the natural default timeout because that is the
            longest the writer can be inside its get.
+
+        ⭐ AND IT NOW DRAINS. The loop only notices `_stop` between flushes, so anything queued after
+           the last one was left sitting in the queue — harmless while the only callers were tests with
+           nothing pending, and not harmless once an OPERATOR can stop a store by switching where the rows
+           go: an undrained queue is a player's answer dropped on the floor. The commit belongs here and not
+           at the call site, because a synchronous commit on a request thread is precisely what
+           `test_no_request_path_performs_a_synchronous_log_commit` forbids in app.py.
         """
         self._stop.set()
         if self._thread.is_alive():
             self._thread.join(self.flush_interval + 0.5 if timeout is None else timeout)
-        return not self._thread.is_alive()
+        alive = self._thread.is_alive()
+        if not alive and not self._q.empty():
+            try:
+                self.flush()
+            except Exception as e:
+                self.stats["last_error"] = f"drain on stop: {type(e).__name__}: {e}"[:400]
+        return not alive
 
     def healthy(self):
         """`degraded` is the one field a monitor should key on: it means rows that were meant to be

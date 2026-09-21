@@ -78,7 +78,7 @@ DDL = """CREATE TABLE IF NOT EXISTS {fq} (
   event_id              STRING    COMMENT 'uuid4 per event',
   event_ts              TIMESTAMP COMMENT 'WAREHOUSE clock, when the INSERT executed. A queue away from when the event happened - do NOT rank players by it.',
   received_ts           TIMESTAMP COMMENT 'APP clock, when the event happened. The only column safe to order players by: two players answering the same blank simultaneously landed 2.639s apart on event_ts, and under load that write queued at p50 17.8s.',
-  event_type            STRING    COMMENT 'session_start | question_asked | question_failed | question_unattributed | hint_used | answer_correct | answer_near | answer_wrong | answer_empty | admin_setting',
+  event_type            STRING    COMMENT 'session_start | question_greeting | question_asked | question_failed | question_unattributed | hint_used | answer_correct | answer_near | answer_wrong | answer_empty | week_time | and the META types, which no player aggregate counts: admin_setting | admin_reset | admin_storage | import_receipt',
   season_id             STRING    COMMENT 'which content pack this row belongs to - scenario is switchable, so history must say which one it was scored under',
   user_key              STRING    COMMENT 'workspace user id from x-forwarded-user, stable across sessions',
   user_email            STRING,
@@ -105,7 +105,7 @@ DDL = """CREATE TABLE IF NOT EXISTS {fq} (
   extra                 STRING    COMMENT 'json, for anything added later without a schema change'
 )
 USING DELTA
-COMMENT 'Signal & Noise activity log - the single table this app writes.'
+COMMENT 'The Genie Bake-Off activity log - the single table this app writes.'
 TBLPROPERTIES (delta.enableChangeDataFeed = false)"""
 
 # Columns added after the first deployment. Delta has no ADD COLUMN IF NOT EXISTS, so the existing
