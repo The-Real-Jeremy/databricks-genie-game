@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+
+# GENERATED per target by the predeploy hook (bootstrap/write_app_yaml.py). A committed copy is a stale
+# copy waiting to be deployed to the wrong target.
+app/app.yaml
+

@@ -1,0 +1,330 @@
+# THE GENIE BAKE-OFF — a four-week Genie game.  One bundle deploys everything.
+#
+#   databricks bundle deploy -t <target>     ← creates the app, then the postdeploy hook below
+#                                              creates/permissions the Genie space, creates the log
+#                                              table, grants the app's service principal, and starts
+#                                              and deploys the app. Nothing else to run, nothing to click.
+#
+# Exactly four components exist: this app, one Genie space (user auth only), the read-only `samples`
+# tables behind it, and one delta table for activity. No job, no scheduler, no FMAPI, no Lakebase, no
+# model serving, no vector search, no secret scope.
+bundle:
+  name: night-desk
+
+# ⛔ THE SYNC HONOURS .gitignore, AND THAT ATE THE FIX. `app/app.yaml` is generated per target by the
+#    predeploy hook and gitignored so a stale copy can never be committed and deployed to the wrong
+#    target — and that same ignore rule silently kept it out of the upload, so the container came up with
+#    no environment for the second time in one afternoon, from the opposite direction. An explicit include
+#    is the only thing that overrides the ignore.
+sync:
+  include:
+    - app/app.yaml
+
+variables:
+  app_name:
+    description: App name; also the Genie space suffix so two targets never collide.
+    default: night-desk
+  warehouse_id:
+    description: Serverless SQL warehouse used by the Genie space and by the log writer.
+  storage_mode:
+    description: >-
+      `delta` writes the activity log to the target table (the original behaviour, and the default).
+      `local` writes it to a SQLite file inside the app container instead, which needs NO catalog, no
+      table grant and no service-principal secret — for a workspace that will not give the app a writable
+      table, or not quickly.
+      ⚠️ LOCAL IS EPHEMERAL: an Apps container has no persistent volume, so a restart or redeploy loses
+      the file. That is the trade, and it is why the CSV export/import exists — see README "Local mode".
+    default: delta
+  local_db_path:
+    description: Where the SQLite file lives in local mode. /tmp is the one path writable in every
+      Apps container; point it at a volume if the workspace has one.
+    default: /tmp/night_desk/night_desk.db
+  log_schema:
+    description: >-
+      ⭐ `<catalog>.<schema>` — A SCHEMA YOU ALREADY HAVE and can create tables in. You point at a
+      schema you own and can use, rather than at a catalog in which the deploy would have to create
+      one. The deploy creates only the activity TABLE inside it, and if the schema is absent
+      or invisible the bootstrap stops AT DEPLOY TIME naming it, rather than failing on the first write.
+      Required in `delta` mode; ignored in `local` mode, which is why it defaults to the `none` sentinel
+      rather than being unset — an unset required variable makes `bundle deploy` prompt, and a prompt is
+      invisible to an automated deploy.
+      ⚠️ TWO PARTS, NOT ONE OR THREE. `main` alone or `main.schema.table` are both refused by name.
+    default: "none"
+  log_table:
+    default: activity_log
+  genie_space_title:
+    description: >-
+      Fallback title only — each scenario's content pack names its own space, and that wins. Resolved by
+      TITLE at runtime so no space id ever has to be plumbed from deploy time into app config.
+    default: The Data Desk
+  space_suffix:
+    description: >-
+      Appended to every space title, so two targets in one workspace get their own spaces instead of
+      silently sharing one. Applied identically by the bootstrap and by the app.
+      MUST NOT be an empty string — the Apps API rejects an env entry with no value and the deploy then
+      fails AFTER the app has started. The literal `none` means "no suffix".
+    default: "none"
+  audience_group:
+    description: Workspace group granted CAN_RUN on the Genie space.
+    default: users
+  season_id:
+    description: The scenario the game opens on.
+    default: s1_letters
+  seasons:
+    description: >-
+      Scenarios to build a Genie space for, comma-separated. ONE SPACE PER SCENARIO is a measured
+      decision: a space holding two unrelated sample domains answered a bakery question from the travel
+      dataset (17/18 vs 18/18), and a wrong-domain answer raises no error.
+      Defaults to just the active scenario, which keeps a pilot at exactly four components.
+    default: s1_letters
+  season_tz:
+    description: >-
+      Kept only for the timezone the operator page stamps times in. There is no weekly rotation any more:
+      an admin RELEASES weeks from the operator screen and each player unlocks their own, so nothing about
+      the game depends on a date.
+    default: Australia/Sydney
+  theme:
+    default: databricks
+  alt_theme:
+    default: neutral
+  # ── `operator_emails` IS GONE ────────────────────────────────────────────────
+  # "We don't need to specify operator emails. Anyone with the password should be able to act as operator."
+  # One lock, not two. The allowlist used to be checked BEFORE the password — see the note in
+  # app/lib/config.py for what that cost and why it is an acceptable trade for a game.
+  # ⛔ The answer-key leak that motivated the allowlist is fixed at its ROOT and not by this gate: no query
+  #    projects `expected_value`, so even an operator cannot download the answers. That is what makes the
+  #    simplification safe rather than a reopening.
+  operator_password:
+    description: >-
+      Password for the Operator page.
+      The literal `none` no longer means CLOSED — it means **fall back to the built-in default password**
+      in `app/lib/config.py`, so a deploy with no variables at all still has an operator page somebody can
+      open. That is the requirement: a default password is always deployed.
+      ⛔ STILL DO NOT PUT A REAL PASSWORD HERE. This file is committed and the repo is handed to customers,
+      and a value in a git history cannot be unsaid. The predeploy hook resolves it at deploy time from
+      `--var operator_password=…`, else the `OPERATOR_PASSWORD` environment variable, else the local file
+      `~/.night-desk/operator_password` (outside the repo, never committed), else the built-in default.
+      The built-in default is public by construction — it gates PLAYERS, not anyone with repo or workspace
+      access. This variable's default stays `none`.
+    default: "none"
+  allow_date_override:
+    description: >-
+      Vestigial: the rotation it previewed is gone. Kept so the env entry the app already reads is never
+      empty, which the Apps API refuses.
+    default: "1"
+
+resources:
+  apps:
+    night_desk:
+      name: ${var.app_name}
+      # ⛔ THIS IS BRANDING, NOT WIRING — it is what the Apps list shows a human. It must carry the CURRENT
+      #    name; `var.genie_space_title` a few lines up must NOT, because the app resolves its space BY
+      #    TITLE and renaming that points a deployment at a space that does not exist. Same string, two
+      #    opposite obligations, told apart by the KEY and never by the value.
+      #    `name:` is an identifier, not branding: renaming it creates a NEW app and orphans the old one.
+      description: "The Genie Bake-Off — a four-week Genie game. Ask the genie, fill in the memo."
+      source_code_path: ./app
+      # The ONLY extra scope this app needs. Measured: `genie` alone reaches
+      # start-conversation, the message poll and the query-result, as the viewer.
+      user_api_scopes:
+        - genie
+      resources:
+        - name: warehouse
+          description: Writes the activity log, as the app's own service principal.
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+      # ⛔ WITHOUT THIS BLOCK NOBODY BUT AN ADMIN CAN OPEN THE APP — and nothing says so anywhere.
+      #    MEASURED in a freshly vended workspace: after the one-line deploy the
+      #    app's ACL is {creator: CAN_MANAGE, admins: CAN_MANAGE (inherited)} and **`users` is absent from
+      #    both**. Everything else in "one line deploy and any other people in the workspace can just start
+      #    playing" was already true — the Genie space is granted CAN_RUN by the postdeploy hook, and `users`
+      #    already holds CAN_USE on the warehouse by platform default (measured in the fresh workspace, where
+      #    nobody had granted anything). This block is the only missing half.
+      #    `CAN_USE` is the level ENUMERATED by `databricks apps get-permission-levels` — the only two are
+      #    CAN_MANAGE and CAN_USE — rather than a name inferred from a 403 message.
+      #    It reuses `audience_group` deliberately: the app's audience and the Genie space's audience are the
+      #    same population, so they must not be able to drift into two different groups.
+      permissions:
+        - group_name: ${var.audience_group}
+          level: CAN_USE
+      # ⛔ THERE IS NO `config:` BLOCK HERE ANY MORE, AND THAT IS THE FIX, NOT AN OMISSION.
+      #    `resources.apps.<key>.config` with `command` and `env` survives `bundle validate`, resolves all
+      #    twelve variables in `-o json`, and then GOES NOWHERE: the terraform provider's `databricks_app`
+      #    schema has no `config`, `command` or `env` attribute, and `databricks apps get` returns no such
+      #    field either. The CLI's own staging copy happened to carry an app.yaml for a while, which is why
+      #    this looked like it worked — and the moment a deployment pointed at the bundle's `files/app`
+      #    path instead, the container came up with NO ENVIRONMENT AT ALL while `bundle validate`, the
+      #    deploy's exit code and `apps get` RUNNING all still said everything was fine.
+      #    The runtime config now lives in a real `app/app.yaml`, generated per target by the predeploy
+      #    hook below from these same bundle variables, and the postdeploy hook REFUSES TO FINISH unless
+      #    the running app's own /api/health confirms it arrived.
+
+# ⚠️ The hook location the CLI's own JSON schema documents (a top-level `scripts:`) is INERT in v0.299.0
+#    — `bundle validate` shows it resolved and `--debug` then says "No script defined for postdeploy".
+#    `experimental.scripts` is the form that actually runs. Measured.
+experimental:
+  scripts:
+    # Runs BEFORE the source is synced, so the file it writes is uploaded with the app.
+    predeploy: |
+      set -euo pipefail
+      # ⛔ THE POSTDEPLOY HOOK AUTHENTICATES FROM THE ENVIRONMENT, NEVER FROM `-p`, and getting that wrong
+      #    is silent. `bootstrap.py` reads DB_PROFILE from DATABRICKS_CONFIG_PROFILE; under `-p myprofile`
+      #    that variable is EMPTY, its `cli()` then omits `-p` altogether, and every schema, table, GRANT
+      #    and Genie space it creates lands in the DEFAULT profile's workspace while the app itself deploys
+      #    to the right one. Nothing errors and the deploy goes green.
+      #    ⚠️ AND THE MISTAKE IS INVITED: the CLI's own host-mismatch message ends "To select it, pass
+      #    -p <profile>", so `-p` is exactly what a deployer reaches for.
+      #    Hard stop on the customer targets, which have no host and where `-p` alone would otherwise
+      #    appear to work. Our own targets pin a host and are untouched by this.
+      case "${bundle.target}" in
+        customer*)
+          if [ -z "${DATABRICKS_CONFIG_PROFILE:-}" ] && [ -z "${DATABRICKS_HOST:-}" ]; then
+            echo "[predeploy] ⛔ Put the auth in the ENVIRONMENT, not in -p:" >&2
+            echo "[predeploy]      DATABRICKS_CONFIG_PROFILE=<profile> databricks bundle deploy -t ${bundle.target} …" >&2
+            echo "[predeploy]    (or DATABRICKS_HOST + DATABRICKS_TOKEN in CI). The postdeploy hook shells" >&2
+            echo "[predeploy]    out to the CLI and inherits only the environment — with -p alone it would" >&2
+            echo "[predeploy]    create the schema, table, grants and Genie space in your DEFAULT profile's" >&2
+            echo "[predeploy]    workspace, silently, while the app deployed to this one." >&2
+            exit 1
+          fi ;;
+      esac
+      # ⭐ THE MODE IS RESOLVED HERE, IN SHELL, because a bundle variable cannot be used in a conditional.
+      #    In local mode LOG_TABLE_FQN is the `none` sentinel rather than a half-built `none.schema.table`
+      #    that looks like a real identifier in the operator page and in /api/health.
+      if [ "${var.storage_mode}" = "local" ]; then
+        LOG_FQN="none"
+      else
+        LOG_FQN="${var.log_schema}.${var.log_table}"
+        case "$LOG_FQN" in
+          none.*) echo "[predeploy] storage_mode=delta needs a real log_schema (<catalog>.<schema>); it is still 'none'." >&2
+                  exit 1 ;;
+        esac
+      fi
+      # ── ⛔ WOULD THIS DEPLOY RENAME — AND THEREFORE DESTROY — THE APP? ────────────────────────────
+      # `name:` on databricks_app is the app's IDENTITY, so deploying a target whose state already tracks an
+      # app under a different name makes terraform DESTROY it and create a new one, green and silent. The
+      # replacement's NEW service principal does not hold the three grants, so the app then starts, serves
+      # every page and RECORDS NOTHING. Two apps were lost to exactly this.
+      # ⭐ Three states, and the two failure directions are opposite: no state ALLOWS (or every clean install
+      #    breaks, which is the property that matters most), a different name REFUSES, and "cannot read the
+      #    state" REFUSES rather than waving through what it cannot see. Absence is only ever concluded from
+      #    a listing that SUCCEEDED — see the script's header for why an error's prose is not evidence.
+      # ⚠️ `${DB_PROFILE:-}`, NOT `$DB_PROFILE`. This hook runs under `set -u`, DB_PROFILE is exported by the
+      #    POSTdeploy and does not exist yet here, so a bare reference would abort EVERY deploy with
+      #    "unbound variable" — a guard against a rare destructive case breaking the ordinary path, which is
+      #    the exact failure direction the guard itself is designed to avoid.
+      DB_PROFILE="${DATABRICKS_CONFIG_PROFILE:-${DB_PROFILE:-}}" \
+        python3 bootstrap/check_app_rename.py "${workspace.root_path}" "${var.app_name}"
+
+      # ── THE OPERATOR PASSWORD, resolved WITHOUT ever being committed ──────────────────────────────
+      # Three sources, most explicit first. The local file is what makes a maintainer's repeated deploys "just work"
+      # while keeping the value out of the repo entirely — note it lives OUTSIDE the tree, so no change to
+      # .gitignore can ever make it committable. A deployer uses --var or the env var.
+      OP_PW='${var.operator_password}'
+      if [ "$OP_PW" = "none" ] && [ -n "${OPERATOR_PASSWORD:-}" ]; then
+        OP_PW="$OPERATOR_PASSWORD"
+      fi
+      if [ "$OP_PW" = "none" ] && [ -r "$HOME/.night-desk/operator_password" ]; then
+        OP_PW="$(tr -d '\r\n' < "$HOME/.night-desk/operator_password")"
+        echo "[predeploy] operator password: taken from ~/.night-desk/operator_password"
+      elif [ "$OP_PW" = "none" ]; then
+        echo "[predeploy] ⚠️  NO operator password set — falling back to the PUBLIC built-in default." >&2
+        echo "[predeploy]     Anyone who can read the repo can open the Operator page. Set --var" >&2
+        echo "[predeploy]     operator_password=…, OPERATOR_PASSWORD=…, or ~/.night-desk/operator_password." >&2
+      else
+        echo "[predeploy] operator password: supplied explicitly"
+      fi
+      # Never echoed. write_app_yaml.py refuses an EMPTY value, so a blank file becomes a loud error here
+      # rather than an app that starts with a blank password entry the Apps API then rejects.
+      python3 bootstrap/write_app_yaml.py app/app.yaml \
+        "OPERATOR_PASSWORD=$OP_PW" \
+        "WAREHOUSE_ID=${var.warehouse_id}" \
+        "STORAGE_MODE=${var.storage_mode}" \
+        "LOCAL_DB_PATH=${var.local_db_path}" \
+        "LOG_TABLE_FQN=$LOG_FQN" \
+        "GENIE_SPACE_TITLE=${var.genie_space_title}" \
+        "GENIE_SPACE_SUFFIX=${var.space_suffix}" \
+        "SEASON_ID=${var.season_id}" \
+        "SEASONS=${var.seasons}" \
+        "SEASON_TZ=${var.season_tz}" \
+        "THEME=${var.theme}" \
+        "ALT_THEME=${var.alt_theme}" \
+        "ALLOW_DATE_OVERRIDE=${var.allow_date_override}" \
+        "BUILD_ID=${bundle.target}-${bundle.name}"
+    postdeploy: |
+      set -euo pipefail
+      export DB_PROFILE="${DATABRICKS_CONFIG_PROFILE:-}"
+      export APP_NAME="${var.app_name}"
+      export WAREHOUSE_ID="${var.warehouse_id}"
+      export STORAGE_MODE="${var.storage_mode}"
+      export LOG_SCHEMA="${var.log_schema}"
+      export LOG_TABLE="${var.log_table}"
+      export GENIE_SPACE_TITLE="${var.genie_space_title}"
+      export SPACE_SUFFIX="${var.space_suffix}"
+      export AUDIENCE_GROUP="${var.audience_group}"
+      export SEASON_ID="${var.season_id}"
+      export SEASONS="${var.seasons}"
+      python3 bootstrap/bootstrap.py
+      echo "[postdeploy] starting and deploying the app"
+      # ⛔ THE NESTED `bundle run` DOES NOT INHERIT THE OUTER DEPLOY'S `--var`, AND THAT BROKE THE DOCUMENTED
+      #    INSTALL. Found by the first deploy into a genuinely fresh workspace: `warehouse_id` is
+      #    the one variable with no default, our own targets happen to set it IN the target block, and the
+      #    README tells a customer to pass it with `--var`. So this line failed with "no value assigned to
+      #    required variable warehouse_id" — AFTER the app and the Genie space had been created, leaving a
+      #    STOPPED app with no deployment. Every step before it had succeeded and said so.
+      #    Forwarded as BUNDLE_VAR_* (the form the CLI's own error message names) rather than on the command
+      #    line, so nothing sensitive can ever end up in a process listing.
+      #
+      # ⛔ THE PREDICATE "ANY VARIABLE WITHOUT A DEFAULT" WAS TOO NARROW, AND IT EXEMPTED EXACTLY THE ONE
+      #    THAT BROKE NEXT. `app_name` HAS a default, so the guard skipped it — and the nested
+      #    run therefore resolved the app's name back to the target default and died with
+      #    "App with name night-desk does not exist or is deleted", AFTER the app, table, grants and Genie
+      #    space had all been created. Same failure shape as the warehouse_id one above, caught by the same
+      #    guard's blind spot.
+      #    THE RIGHT PREDICATE IS: **any variable the nested run RESOLVES** — i.e. one with no default (or
+      #    resolution fails outright) OR one referenced under `resources:` (or the run acts on the wrong
+      #    thing). That is `app_name`, `audience_group` and `warehouse_id`, and test_deployable_elsewhere
+      #    now asserts that set rather than the no-default set.
+      #
+      # ⚠️ THIS DOES NOT FIX THE DESTROY-AND-RECREATE, and the two failures are easy to merge. Overriding
+      #    `app_name` against bundle state that already tracks an app under a different name makes terraform
+      #    DESTROY the old app and its service principal — that comes from name-as-identity plus existing
+      #    state, is untouched by any forwarding, and cost two apps on the test workspace. See
+      #    `### ⛔ Renaming the app` in the README.
+      export BUNDLE_VAR_warehouse_id="${var.warehouse_id}"
+      export BUNDLE_VAR_app_name="${var.app_name}"
+      export BUNDLE_VAR_audience_group="${var.audience_group}"
+      databricks bundle run night_desk -t "${bundle.target}"
+      # ⛔ ASSERT THE END STATE, NOT THE EXIT CODE. A green deploy, "App started successfully" and
+      #    `apps get` RUNNING were ALL TRUE while the container had no environment at all. The only
+      #    witness that cannot lie about it is the running app's own health endpoint, so the deploy is
+      #    not finished until that agrees. Non-zero exit here FAILS the deploy, which is the point.
+      STORAGE_MODE="${var.storage_mode}" \
+        python3 bootstrap/verify_deployed.py "${var.app_name}" "${bundle.target}-${bundle.name}"
+
+targets:
+  # ── NEITHER TARGET PINS A `workspace.host`, AND THE ABSENCE *IS* THE FEATURE ──────
+  #
+  # A target with no `workspace.host` takes its host from whatever you authenticate with,
+  # so these deploy into YOUR workspace. Everything else comes from `--var` per the README.
+  # `test_deployable_elsewhere.py` asserts they stay host-free and that the README names them.
+  #
+  # ⛔ Do not add a `host:` to either one. A pinned host makes the documented install fail
+  #    everywhere but the workspace it names, and the error's own advice is to deploy into
+  #    THAT one — so a reader with any access there would follow it. Measured.
+  customer:
+    default: true
+    variables:
+      app_name: night-desk
+
+  # ⛔ A DISTINCT app_name AND space_suffix, not a copy of the one above. Two targets sharing an app name
+  #    means the second deploy silently REPLACES the first, and two targets sharing a space TITLE means they
+  #    silently share one Genie space — `ensure_space` creates a space only when the title is absent and
+  #    cannot detect two with the same title. A customer
+  #    picks one mode, so they would never notice; anyone comparing the two modes in one workspace would.
+  customer-local:
+    variables:
+      app_name: night-desk-local
+      storage_mode: local
+      space_suffix: " (local)"

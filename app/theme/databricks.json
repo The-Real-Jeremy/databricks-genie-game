@@ -1,0 +1,29 @@
+{
+  "name": "databricks",
+  "label": "Databricks",
+  "wordmark": "THE GENIE BAKE-OFF",
+  "wordmark_sub": "ask the data · fill the blanks",
+  "tokens": {
+    "bg": "#F9F7F4",
+    "bg-2": "#EEEDE9",
+    "surface": "#FFFFFF",
+    "surface-2": "#F6F5F2",
+    "line": "#DBDAD5",
+    "line-strong": "#BFC2BD",
+    "text": "#1B3139",
+    "text-dim": "#4C6069",
+    "accent": "#FF3621",
+    "accent-ink": "#1F1F1F",
+    "accent-soft": "#FFE7E2",
+    "accent-2": "#216FAF",
+    "accent-2-soft": "#E3EFF9",
+    "good": "#0B7A55",
+    "good-soft": "#DDF3E9",
+    "near": "#8A5300",
+    "near-soft": "#FFEFD4",
+    "bad": "#C0334A",
+    "bad-soft": "#FCE5E9",
+    "shadow": "rgba(27, 49, 57, .12)",
+    "accent-line": "#FF3621"
+  }
+}

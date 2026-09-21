@@ -1,0 +1,577 @@
+{
+  "season_id": "s1_letters",
+  "title": "THE GENIE BAKE-OFF",
+  "subtitle": "four briefs · twenty blanks · one genie",
+  "premise": "Use the power of Genie to solve 4 challenges and master the data of your bake house's datalake! Each challenge has 5 blanks to answer - you can use hints but be warned that you might lose a few precious points.. Rack up points to rise up the leaderboard and win exclusive Databricks prizes. Don't stop here, use Genie to talk to any data you work with! Find out more here.",
+  "archive_name": "the genie",
+  "space_title": "The Data Desk",
+  "requires_tables": [
+    "samples.bakehouse.sales_transactions",
+    "samples.bakehouse.sales_customers",
+    "samples.bakehouse.sales_franchises",
+    "samples.bakehouse.sales_suppliers",
+    "samples.bakehouse.media_customer_reviews"
+  ],
+  "space_instructions": [
+    "You answer questions about Bakehouse, a cookie retailer. The data covers a few thousand till receipts taken over seventeen days in May 2024, several dozen franchise shops in a dozen countries, and the customers who bought from them. sales_transactions has one row per receipt, with dateTime, product, quantity, unitPrice, totalPrice, paymentMethod, customerID and franchiseID. sales_franchises has one row per shop, with name, city, district, country and size. sales_customers has one row per customer, with first_name, last_name, city and country. sales_suppliers lists ingredient suppliers, and media_customer_reviews holds written customer reviews.",
+    "ANSWER FORMAT MATTERS, because the person asking is copying your answer into a form. Always end your reply with the answer as a bare value on its own. Write whole numbers as plain digits with no thousands separators and no abbreviation: write 81234, never 81,234 and never 81.2K or 81.2 thousand. Write money as a whole number of dollars with no dollar sign and no cents. Write dates as YYYY-MM-DD, for example 2019-03-07. Write the names of products, shops, cities, countries and customers exactly as they are spelled in the data, with nothing added — write Maple Morsel, not the Maple Morsel cookie. Write payment methods in lower case exactly as they are stored in the paymentMethod column.",
+    "Keep replies to one or two short sentences, then the value. Do not include SQL in your reply. If a question could be read two ways — best selling by revenue or by number of receipts, for instance — say in one clause which reading you used, then give the single value for it.",
+    "If you are asked what you can do, who you are, or how to start, answer in two or three short sentences without any SQL and without listing every column: say that you can answer questions about the Bakehouse cookie chain's till receipts, its shops and its customers; give two or three example questions someone could ask next, such as how many receipts there are in total, which product made the most money, or which country has the most shops; and invite them to ask. Do not mention that you are a Genie space, a model or an assistant, and do not apologise for anything.",
+    "Vocabulary for this data: revenue, takings, sales value and total sales all mean SUM(totalPrice). units, items and quantity mean SUM(quantity). a receipt, a transaction and a sale are all one row of sales_transactions. a shop, store, outlet, door and franchise are all one row of sales_franchises. a card and a payment method are the paymentMethod column. a day means the calendar date of dateTime."
+  ],
+  "space_sample_questions": [
+    "What can you do?",
+    "How many transactions are there in total?",
+    "Which product generated the most revenue?",
+    "Which country has the most franchises?",
+    "Which payment method was used on the most receipts?",
+    "What was the busiest single day by number of transactions?"
+  ],
+  "total_weeks": 4,
+  "cases": [
+    {
+      "case_id": "w1",
+      "week": 1,
+      "scene": "cfo",
+      "title": "THE MONDAY MEMO",
+      "challenge": "Give the CFO his first read of the Bakehouse books.",
+      "story": "Bakehouse is a cookie chain looking for money to open more shops. Instead of a summary they sent seventeen days of raw till receipts, and the CFO wants a paragraph before Monday's meeting. Nobody has opened the box yet — start with the size of it.",
+      "letter": {
+        "to": "Marcus Vance, CFO",
+        "subject": "Bakehouse — first read of the receipts",
+        "paras": [
+          [
+            "Marcus — first pass through the Bakehouse box is done. The file covers ",
+            {
+              "blank": "w1q1"
+            },
+            " separate receipts, and the whole range is only ",
+            {
+              "blank": "w1q2"
+            },
+            " products. Everything that went across the counter adds up to $",
+            {
+              "blank": "w1q3"
+            },
+            ". The busiest single trading day in the period was ",
+            {
+              "blank": "w1q4"
+            },
+            ", and the card that turns up on the most receipts is ",
+            {
+              "blank": "w1q5"
+            },
+            "."
+          ],
+          [
+            "Nothing alarming so far. Worth noting that the card appearing most often need not be the card moving the most money — I will come back to that."
+          ]
+        ]
+      },
+      "clues": [
+        {
+          "clue_id": "w1q1",
+          "label": "RECEIPTS",
+          "ask": "How many receipts are in the file altogether?",
+          "answer_type": "number",
+          "expected": "3333",
+          "display": "3,333",
+          "points": 100,
+          "tolerance": {
+            "abs": 0
+          },
+          "near_band": {
+            "pct": 10
+          },
+          "near": [
+            {
+              "value": "0",
+              "nudge": "A zero almost always means the question filtered everything out, rather than that the answer really is none. Try naming the column the way the data names it."
+            }
+          ]
+        },
+        {
+          "clue_id": "w1q2",
+          "label": "RANGE",
+          "ask": "How many different products does the chain sell?",
+          "answer_type": "number",
+          "expected": "6",
+          "display": "6",
+          "points": 100,
+          "tolerance": {
+            "abs": 0
+          },
+          "near_band": {
+            "pct": 10
+          },
+          "near": [
+            {
+              "value": "0",
+              "nudge": "A zero almost always means the question filtered everything out, rather than that the answer really is none. Try naming the column the way the data names it."
+            }
+          ]
+        },
+        {
+          "clue_id": "w1q3",
+          "label": "TAKINGS",
+          "ask": "What did the seventeen days add up to in total?",
+          "answer_type": "number",
+          "expected": "66471",
+          "display": "66,471",
+          "points": 100,
+          "tolerance": {
+            "abs": 1
+          },
+          "near_band": {
+            "pct": 10
+          },
+          "near": [
+            {
+              "value": "0",
+              "nudge": "A zero almost always means the question filtered everything out, rather than that the answer really is none. Try naming the column the way the data names it."
+            }
+          ]
+        },
+        {
+          "clue_id": "w1q4",
+          "label": "PEAK DAY",
+          "ask": "Which single calendar day took the most receipts?",
+          "answer_type": "date",
+          "expected": "2024-05-13",
+          "display": "13 May 2024",
+          "points": 100,
+          "near": [
+            {
+              "value": "2024-05-17",
+              "nudge": "Close — that is a busy day, but not the busiest. Count receipts per calendar day and take the top one."
+            }
+          ]
+        },
+        {
+          "clue_id": "w1q5",
+          "label": "CARD",
+          "ask": "Which payment method appears on the most receipts?",
+          "answer_type": "string",
+          "expected": "mastercard",
+          "display": "mastercard",
+          "points": 100,
+          "accept": [],
+          "near": [
+            {
+              "value": "amex",
+              "nudge": "That card leads on a different measure, not this one. This blank wants the card that appears on the most receipts — a count of rows, not a sum of money."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "w2",
+      "week": 2,
+      "scene": "shelf",
+      "title": "THE SHELF REVIEW",
+      "challenge": "Settle which cookie is really the hero product.",
+      "story": "Bakehouse's deck calls one cookie the clear hero of the range. The buying team wants that checked before they reprice the shelf, because \"best seller\" can mean the one that made the most money or the one that sold the most often — and those are not always the same cookie.",
+      "letter": {
+        "to": "Priya Raman, Head of Buying",
+        "subject": "Bakehouse — the range, ranked properly",
+        "paras": [
+          [
+            "Priya — ranked by money rather than by mentions, the top seller is ",
+            {
+              "blank": "w2q1"
+            },
+            ", with ",
+            {
+              "blank": "w2q2"
+            },
+            " second. At the other end of the shelf, the product that appears on the fewest receipts is ",
+            {
+              "blank": "w2q3"
+            },
+            "."
+          ],
+          [
+            "For scale: ",
+            {
+              "blank": "w2q4"
+            },
+            " individual items went out of the door in the period, and every line sells at the same $",
+            {
+              "blank": "w2q5"
+            },
+            " unit price — so there is no premium tier hiding in the mix, and volume and revenue rank the range in almost the same order. \"One clear hero product\" is a sentence written off a single query."
+          ]
+        ]
+      },
+      "clues": [
+        {
+          "clue_id": "w2q1",
+          "label": "HERO",
+          "ask": "Which product generated the most revenue?",
+          "answer_type": "string",
+          "expected": "Golden Gate Ginger",
+          "display": "Golden Gate Ginger",
+          "points": 100,
+          "accept": [],
+          "near": []
+        },
+        {
+          "clue_id": "w2q2",
+          "label": "RUNNER-UP",
+          "ask": "Which product generated the second most revenue?",
+          "answer_type": "string",
+          "expected": "Outback Oatmeal",
+          "display": "Outback Oatmeal",
+          "points": 100,
+          "accept": [],
+          "near": [
+            {
+              "value": "Tokyo Tidbits",
+              "nudge": "You counted tickets, not takings. Rank by money rather than by how often a product appears."
+            },
+            {
+              "value": "Austin Almond Biscotti",
+              "nudge": "Close. Rank the products by SUM(totalPrice) and take the second row."
+            }
+          ]
+        },
+        {
+          "clue_id": "w2q3",
+          "label": "TAIL",
+          "ask": "Which product appears on the fewest receipts?",
+          "answer_type": "string",
+          "expected": "Orchard Oasis",
+          "display": "Orchard Oasis",
+          "points": 100,
+          "accept": [],
+          "near": [
+            {
+              "value": "Austin Almond Biscotti",
+              "nudge": "Close — that is near the bottom on money. This blank wants fewest RECEIPTS, which is a count."
+            }
+          ]
+        },
+        {
+          "clue_id": "w2q4",
+          "label": "UNITS",
+          "ask": "How many individual items were sold in total?",
+          "answer_type": "number",
+          "expected": "22157",
+          "display": "22,157",
+          "points": 100,
+          "tolerance": {
+            "abs": 1
+          },
+          "near_band": {
+            "pct": 10
+          },
+          "near": [
+            {
+              "value": "0",
+              "nudge": "A zero almost always means the question filtered everything out, rather than that the answer really is none. Try naming the column the way the data names it."
+            }
+          ]
+        },
+        {
+          "clue_id": "w2q5",
+          "label": "PRICE",
+          "ask": "What does a single item cost?",
+          "answer_type": "number",
+          "expected": "3",
+          "display": "3",
+          "points": 100,
+          "tolerance": {
+            "abs": 0
+          },
+          "near_band": {
+            "pct": 10
+          },
+          "near": [
+            {
+              "value": "0",
+              "nudge": "A zero almost always means the question filtered everything out, rather than that the answer really is none. Try naming the column the way the data names it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "w3",
+      "week": 3,
+      "scene": "map",
+      "title": "THE EXPANSION MAP",
+      "challenge": "Tell the board where this chain actually is, and where its money is.",
+      "story": "The investment paper says Bakehouse is \"strongest in one region with a solid second market\". That is a claim about how many shops it has — not about how much they make. The board needs both, because scale and concentration are different stories and the deck only tells one of them.",
+      "letter": {
+        "to": "The Investment Committee",
+        "subject": "Bakehouse — the estate, and where the money is",
+        "paras": [
+          [
+            "Bakehouse has ",
+            {
+              "blank": "w3q1"
+            },
+            " shops trading. The country holding the most of them is ",
+            {
+              "blank": "w3q2"
+            },
+            ", and ",
+            {
+              "blank": "w3q3"
+            },
+            " countries have exactly one shop with a flag on it — which is a presence, not a market. Only one city has more than one Bakehouse in it: ",
+            {
+              "blank": "w3q4"
+            },
+            "."
+          ],
+          [
+            "The single highest-earning shop in the chain, however, is ",
+            {
+              "blank": "w3q5"
+            },
+            " — and it is not in either of the two biggest markets. So the estate is concentrated in one place and the earnings are concentrated somewhere else. Both facts belong in the paper."
+          ]
+        ]
+      },
+      "clues": [
+        {
+          "clue_id": "w3q1",
+          "label": "DOORS",
+          "ask": "How many shops does the chain have open?",
+          "answer_type": "number",
+          "expected": "48",
+          "display": "48",
+          "points": 100,
+          "tolerance": {
+            "abs": 0
+          },
+          "near_band": {
+            "pct": 10
+          },
+          "near": [
+            {
+              "value": "0",
+              "nudge": "A zero almost always means the question filtered everything out, rather than that the answer really is none. Try naming the column the way the data names it."
+            }
+          ]
+        },
+        {
+          "clue_id": "w3q2",
+          "label": "WEIGHT",
+          "ask": "Which country has the most shops?",
+          "answer_type": "string",
+          "expected": "Japan",
+          "display": "Japan",
+          "points": 100,
+          "accept": [],
+          "near": [
+            {
+              "value": "US",
+              "nudge": "Close, but not the top one. Count the shops per country and take the highest."
+            },
+            {
+              "value": "USA",
+              "nudge": "Close, but not the top one. Count the shops per country and take the highest."
+            }
+          ]
+        },
+        {
+          "clue_id": "w3q3",
+          "label": "FLAGS",
+          "ask": "How many countries have exactly one shop?",
+          "answer_type": "number",
+          "expected": "6",
+          "display": "6",
+          "points": 100,
+          "tolerance": {
+            "abs": 0
+          },
+          "near_band": {
+            "pct": 10
+          },
+          "near": [
+            {
+              "value": "0",
+              "nudge": "A zero almost always means the question filtered everything out, rather than that the answer really is none. Try naming the column the way the data names it."
+            }
+          ]
+        },
+        {
+          "clue_id": "w3q4",
+          "label": "TWICE OVER",
+          "ask": "Which city has more than one shop?",
+          "answer_type": "string",
+          "expected": "Seattle",
+          "display": "Seattle",
+          "points": 100,
+          "accept": [],
+          "near": []
+        },
+        {
+          "clue_id": "w3q5",
+          "label": "TOP EARNER",
+          "ask": "Which single shop took the most money?",
+          "answer_type": "string",
+          "expected": "Baked Bliss",
+          "display": "Baked Bliss",
+          "points": 100,
+          "accept": [],
+          "near": [
+            {
+              "value": "Sweet Sinsations",
+              "nudge": "Close — that is high on the list but not top. Join the receipts to the shops and sum totalPrice per shop name."
+            },
+            {
+              "value": "The Crumbly Nook",
+              "nudge": "Close — that is high on the list but not top. Join the receipts to the shops and sum totalPrice per shop name."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "w4",
+      "week": 4,
+      "scene": "magnifier",
+      "title": "THE CONCENTRATION CHECK",
+      "challenge": "Answer the auditor: is a handful of big customers holding this up?",
+      "story": "The auditor has asked the only question that can sink the deal — whether a few large customers are propping these numbers up. The receipts can answer it outright. Be careful which \"most\" you ask for: the person who spent the most and the person who came in most often are two different people in this box.",
+      "letter": {
+        "to": "Dana Whitlock, Audit",
+        "subject": "Bakehouse — customer concentration",
+        "paras": [
+          [
+            "Dana — no whales. Taking the three cards first: even the least-used of them still appears on ",
+            {
+              "blank": "w4q1"
+            },
+            " receipts, and the card that moved the most money is ",
+            {
+              "blank": "w4q2"
+            },
+            " — which, as flagged, is not the card seen most often."
+          ],
+          [
+            "On the customers themselves: the biggest spender over the period is ",
+            {
+              "blank": "w4q3"
+            },
+            ", while the most frequent visitor is ",
+            {
+              "blank": "w4q4"
+            },
+            " — two different people, and neither is material. The largest single receipt in the whole box is $",
+            {
+              "blank": "w4q5"
+            },
+            ". On a book this size no one customer is load-bearing, and the concentration question can be closed."
+          ]
+        ]
+      },
+      "clues": [
+        {
+          "clue_id": "w4q1",
+          "label": "LEAST-USED",
+          "ask": "How many receipts were paid with the least-used of the three cards?",
+          "answer_type": "number",
+          "expected": "1083",
+          "display": "1,083",
+          "points": 100,
+          "tolerance": {
+            "abs": 0
+          },
+          "near_band": {
+            "pct": 10
+          },
+          "near": [
+            {
+              "value": "0",
+              "nudge": "A zero almost always means the question filtered everything out, rather than that the answer really is none. Try naming the column the way the data names it."
+            },
+            {
+              "value": "1144",
+              "nudge": "That is the most-used card. This blank wants the SMALLEST of the three counts."
+            },
+            {
+              "value": "1106",
+              "nudge": "That is the middle card of the three. This blank wants the smallest count."
+            }
+          ]
+        },
+        {
+          "clue_id": "w4q2",
+          "label": "BY VALUE",
+          "ask": "Which payment method moved the most money?",
+          "answer_type": "string",
+          "expected": "amex",
+          "display": "amex",
+          "points": 100,
+          "accept": [
+            "american express"
+          ],
+          "near": [
+            {
+              "value": "mastercard",
+              "nudge": "That card leads on a different measure, not this one. This blank wants the highest total revenue — a sum of money, not a count of rows."
+            }
+          ]
+        },
+        {
+          "clue_id": "w4q3",
+          "label": "BIGGEST SPENDER",
+          "ask": "Which customer spent the most money in total?",
+          "answer_type": "string",
+          "expected": "Lorraine James",
+          "display": "Lorraine James",
+          "points": 100,
+          "accept": [],
+          "near": [
+            {
+              "value": "Jennifer Roth",
+              "nudge": "That customer leads on a different measure. This blank wants the most money — sum totalPrice per customer instead of counting their receipts."
+            }
+          ]
+        },
+        {
+          "clue_id": "w4q4",
+          "label": "MOST FREQUENT",
+          "ask": "Which customer came in most often?",
+          "answer_type": "string",
+          "expected": "Jennifer Roth",
+          "display": "Jennifer Roth",
+          "points": 100,
+          "accept": [],
+          "near": [
+            {
+              "value": "Lorraine James",
+              "nudge": "That customer leads on a different measure. This blank wants the highest NUMBER of separate receipts, not the largest total."
+            }
+          ]
+        },
+        {
+          "clue_id": "w4q5",
+          "label": "CEILING",
+          "ask": "What is the value of the largest single receipt?",
+          "answer_type": "number",
+          "expected": "180",
+          "display": "180",
+          "points": 100,
+          "tolerance": {
+            "abs": 0
+          },
+          "near_band": {
+            "pct": 10
+          },
+          "near": [
+            {
+              "value": "0",
+              "nudge": "A zero almost always means the question filtered everything out, rather than that the answer really is none. Try naming the column the way the data names it."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

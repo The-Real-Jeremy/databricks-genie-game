@@ -1,0 +1,29 @@
+{
+  "name": "neutral",
+  "label": "The Genie Bake-Off",
+  "wordmark": "THE GENIE BAKE-OFF",
+  "wordmark_sub": "ask · read · submit",
+  "tokens": {
+    "bg": "#F7FAFC",
+    "bg-2": "#EAF2F8",
+    "surface": "#FFFFFF",
+    "surface-2": "#F4F9FD",
+    "line": "#D2DDE7",
+    "line-strong": "#B7CADA",
+    "text": "#16212B",
+    "text-dim": "#556575",
+    "accent": "#2A75DA",
+    "accent-ink": "#FFFFFF",
+    "accent-soft": "#DCEAFB",
+    "accent-2": "#A35917",
+    "accent-2-soft": "#FDECD9",
+    "good": "#117C54",
+    "good-soft": "#DFF5E9",
+    "near": "#9E5E00",
+    "near-soft": "#FFEFD1",
+    "bad": "#C0334A",
+    "bad-soft": "#FDE6EA",
+    "shadow": "rgba(20, 40, 60, .10)",
+    "accent-line": "#2A75DA"
+  }
+}

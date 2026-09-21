@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Genie Bake-Off</title>
+<!-- No CDN, no web font, no external request of any kind: the target workspace is assumed air-gapped,
+     and a blocked host HANGS rather than failing, which would render nothing at all. That now includes
+     EVERY file under /art/ — all of them are served by this app, not fetched from anywhere. (It said
+     "the two pieces of art" while there were twelve: a quantity decays on the next commit and "all of
+     them" cannot. Same reason there is no file count in the README any more.) -->
+<link rel="stylesheet" href="/app.css">
+<!-- the tab icon is the same cookie as the topbar mark, cut out of week 3's map by connected
+     component, replacing an inline SVG lamp glyph. Still no external request
+     of any kind — /art/ is served by this app, which is the only thing the note above forbids. -->
+<link rel="icon" type="image/png" href="/art/cookie-mark.png">
+</head>
+<body>
+<!-- the request was a loading animation above
+     'Waking the Genie'? Maybe we can take the same genie animation from the play page, but with a
+     clear background." It IS the play-page stage (Sprites.lampStage on the transparent split art),
+     not a second lamp that could drift from it. The canvas carries a CSS size because
+     ImageStage.fit() DECLINES a zero-sized box by design, and this box exists before <main> does. -->
+<div id="boot" class="boot"><div class="boot-inner"><canvas id="bootCanvas" class="boot-lamp" width="200" height="200" aria-hidden="true"></canvas><div class="boot-bar"></div><p>Waking the genie…</p></div></div>
+
+<header class="topbar" hidden>
+  <button id="wordmark" class="wordmark" title="Switch colours">
+    <span class="wm-mark" aria-hidden="true"></span>
+    <span class="wm-text"><span class="wm-main"></span><span class="wm-sub"></span></span>
+  </button>
+  <nav class="nav">
+    <button data-view="home" class="on">Home</button>
+    <button data-view="play">Play</button>
+    <button data-view="roster">Leaderboard</button>
+    <button data-view="how">How it's made</button>
+    <button data-view="operator" hidden>Operator</button>
+  </nav>
+  <div class="who">
+    <!-- this is the player's EMAIL now, not their first name. It is longer than a first name,
+         so it is allowed to ellipsis rather than pushing the points pill off the bar. -->
+    <span id="whoName" class="who-id"></span>
+    <span id="whoPts" class="pts"></span>
+  </div>
+</header>
+
+<main hidden>
+  <!-- ═══════════════════════════════════════════════════ HOME ═══════════════════════════════════ -->
+  <!-- The four-week navigation lives HERE now (it was moved off the challenge page), so
+       #weeks moved into this view rather than being duplicated: one list, one renderer, and clicking a
+       week both selects it and takes you to the board. -->
+  <section id="view-home" class="view on">
+    <section class="hero">
+      <div class="hero-text">
+        <h1 id="homeGreeting">Welcome!</h1>
+        <!-- the operator's own line, e.g. "Welcome Acme team!". It sits BETWEEN the greeting
+             and the lead because that is where it belongs, and it starts `hidden` so a deployment
+             with no message set renders the hero exactly as it did before — no element, no margin, no
+             gap. The text is set with textContent, never innerHTML: an operator types this and it is
+             shown to every player, so it must not be able to put markup on anyone else's page. -->
+        <p class="hero-client" id="homeClientMsg" hidden></p>
+        <p class="hero-lead" id="homeLead"></p>
+        <p class="hero-sub" id="homeSub"></p>
+      </div>
+      <div class="hero-score" id="homeScore" hidden>
+        <b id="homeScorePts">0</b>
+        <i>points so far</i>
+        <span id="homeScoreSolved" class="muted small"></span>
+      </div>
+      <!-- Shown INSTEAD of the score when there is no progress yet: a big "0 points" is a discouraging
+           greeting and is also indistinguishable from a failed read, and the hero's right half was empty. -->
+      <div class="hero-cta" id="homeCta" hidden>
+        <button class="btn big" id="homeCtaBtn">Start week <span id="homeCtaNum">1</span></button>
+        <span class="muted small" id="homeCtaNote"></span>
+      </div>
+    </section>
+
+    <p class="warn" id="homeWarn" hidden></p>
+
+    <!-- ═══ INSTRUCTIONS, between the welcome and the four challenges ═══════════════
+         His brief: "some very simple short bullet points explaining what to do and the rules, how hints
+         work etc. Short and concise, don't make it too long", and then the copy itself in a follow-up.
+         ⛔ EVERY BULLET HERE IS A CLAIM ABOUT BEHAVIOUR AND WAS CHECKED AGAINST THE CODE, because an
+            instructions panel that misdescribes the rules is worse than no panel: a player who reads
+            "no penalty for asking" and then loses points has been lied to by the product.
+              · hint cost      game.HINT_PENALTY, rendered from `scoring.hint_cost` in the payload and
+                               NOT typed in here — same rule the Hint button follows, so the price in the
+                               instructions cannot drift from the price that is charged.
+              · the decay      game.points_for_focus: base 100, minus 5 per whole minute, FLOOR 40. The
+                               floor is stated because the source sentence did not have it, and a player who
+                               believes a blank can decay to nothing has a reason to give up.
+              · asking is free only two writes in the app carry `points` at all — the hint row and a
+                               correct answer. A wrong answer is logged with points=0. Nothing anywhere
+                               deducts for a question.
+              · the pause      looking() requires the tab VISIBLE and the play view showing and that week
+                               open, so it pauses on a hidden tab too, not only on another screen. Worded
+                               to the broader truth: the rule is generous, so the description is. -->
+    <h2 class="home-h">Instructions</h2>
+    <ul class="howto" id="homeHowto">
+      <!-- "Ask Genie", not "Ask the genie" — the agreed wording, and there is a test that enforces it
+           across the whole of index.html. It caught this bullet on the first run. -->
+      <li><b>Ask Genie.</b> Each challenge is a memo with five blanks. Ask in plain English, read the
+        answer, type the value into the blank.</li>
+      <li><b>Ask as much as you like.</b> Questions are free and unlimited, and a wrong answer costs you
+        nothing — there is no penalty for how many you ask.</li>
+      <li><b>Be quick.</b> A blank is worth <span id="hiBase">100</span> points and drops
+        <span id="hiPerMin">5</span> every minute a challenge is open in front of you, never below
+        <span id="hiFloor">40</span>.</li>
+      <li><b>The timer pauses.</b> It only counts while you are actually on a challenge — switch screens,
+        change tabs or close the laptop and it stops.</li>
+      <li><b>Hints cost <span id="hiHint">5</span> points.</b> Each blank has one, it shows you the
+        question to ask, and it is charged once no matter how often you open it.</li>
+    </ul>
+
+    <h2 class="home-h">The four challenges</h2>
+    <p class="home-note" id="homeWeeksNote"></p>
+    <ol class="weeks home-weeks" id="weeks" aria-label="the four weeks"></ol>
+
+    <h2 class="home-h">Prizes</h2>
+    <!-- bigger, and carrying the four supplied images. The image is DECORATIVE (alt="") because the
+         prize is already named in text beside it — so a browser that cannot decode webp, or a slow first
+         paint, still leaves a complete card rather than an empty one. -->
+    <ol class="prizes" aria-label="prizes">
+      <li class="prize prize-1">
+        <div class="pz-art"><img src="/art/prize-jacket.webp" alt="" width="700" height="679" loading="lazy" decoding="async"></div>
+        <span class="pz-rank">Top 3</span><b class="pz-what">Jacket</b>
+      </li>
+      <li class="prize prize-2">
+        <div class="pz-art"><img src="/art/prize-tshirt.webp" alt="" width="700" height="612" loading="lazy" decoding="async"></div>
+        <span class="pz-rank">4th to 10th</span><b class="pz-what">T-Shirt</b>
+      </li>
+      <!-- the keychain becomes the bottle. `prize-keychain.webp` is deliberately LEFT IN
+           PLACE rather than deleted — it is still the art for a prize he may want back, and storage is
+           cheap. The transparency is a flood fill from the frame
+           edge: this bottle's body is WHITE, so keying the colour white would have erased 939,798 px of
+           it and left an outline round a hole. -->
+      <li class="prize prize-3">
+        <div class="pz-art"><img src="/art/prize-bottle.webp" alt="" width="273" height="700" loading="lazy" decoding="async"></div>
+        <span class="pz-rank">11th to 50th</span><b class="pz-what">Bottle</b>
+      </li>
+      <!-- "instead of stickers, just say Mystery Gifts, you can use the same image as the
+           sticker was" — so the words change and the art is reused exactly as it is. -->
+      <li class="prize prize-4">
+        <div class="pz-art"><img src="/art/prize-stickers.webp" alt="" width="700" height="478" loading="lazy" decoding="async"></div>
+        <span class="pz-rank">51st to 100th</span><b class="pz-what">Mystery Gifts</b>
+      </li>
+    </ol>
+    <p class="home-note">Ranked on the leaderboard when the four weeks are done.</p>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════ HOW IT'S MADE ══════════════════════════ -->
+  <!-- "Let's move how this was made out of the home page. Give it it's on seperate page / section."
+       Moved, not copied — one markup block, one nav entry, and the home page keeps the greeting, the week
+       cards and the prizes. -->
+  <section id="view-how" class="view">
+    <div class="howwrap">
+      <h2 class="how-h">How this was made</h2>
+      <p class="how-lead">Four weeks of memos, a Genie space that reads the Bakehouse data, and one table
+        that records what happened. No notebooks and no copy of the data.</p>
+    <div class="howmade">
+      <ol class="flow">
+        <li class="fl">
+          <span class="fl-ico" aria-hidden="true" data-ico="table"></span>
+          <b>Bakehouse data</b>
+          <i>Receipts, shops and customers, in Unity Catalog</i>
+        </li>
+        <li class="fl">
+          <span class="fl-ico" aria-hidden="true" data-ico="genie"></span>
+          <b>A Genie space</b>
+          <i>Reads that data and answers plain English</i>
+        </li>
+        <li class="fl">
+          <span class="fl-ico" aria-hidden="true" data-ico="app"></span>
+          <b>This app</b>
+          <i>A Databricks App — the memo, the blanks, the clock</i>
+        </li>
+        <li class="fl">
+          <span class="fl-ico" aria-hidden="true" data-ico="log"></span>
+          <b>One activity table</b>
+          <i>Every question and answer, appended as it happens</i>
+        </li>
+        <li class="fl">
+          <span class="fl-ico" aria-hidden="true" data-ico="cup"></span>
+          <b>The leaderboard</b>
+          <i>Read straight back out of that table</i>
+        </li>
+      </ol>
+      <p class="home-note howmade-note">No notebooks, no pipeline, no copy of the data: the game asks the
+        same Genie space you would ask yourself, and writes what happened to one table.</p>
+    </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════ PLAY ═══════════════════════════════════ -->
+  <section id="view-play" class="view">
+
+    <!-- Shown ONLY when the server says it could not read this player's progress. An empty state and a
+         failed read look identical, so the difference has to be stated, not inferred. -->
+    <p class="warn" id="stateWarn" hidden></p>
+
+    <!-- the row of four week cards is GONE from here (it is on the home screen), and the timer
+         has moved to the right of the answer/progress chevron. -->
+    <div class="progressrow">
+      <ol class="widgets" id="widgets" aria-label="the five blanks in this memo"></ol>
+      <div class="clockbox" id="clockbox" hidden>
+        <span class="clk-label">this week</span>
+        <b class="clk-time" id="clkTime">0:00</b>
+        <span class="clk-worth">next blank worth <b id="clkWorth">100</b></span>
+      </div>
+    </div>
+
+    <!-- the arena: two thirds challenge, one third genie -->
+    <div class="arena">
+
+      <!-- ── LEFT: this week's challenge ──────────────────────────────────────────────── -->
+      <section class="challenge" id="challenge">
+        <div class="stage stage-week">
+          <canvas id="sceneCanvas" width="480" height="180" aria-hidden="true"></canvas>
+          <div class="stage-caption"><span id="weekBadge">WEEK 1</span><b id="weekTitle">—</b></div>
+        </div>
+
+        <!-- The instruction sentence, verbatim. ⛔ IT IS INSTRUCTION COPY, NOT A CHARACTER LINE. It sits
+             OUTSIDE the stage box and carries none of the speech idiom — no bubble, no quotation marks,
+             muted and flush left — because on week 4 the art has a speech bubble PAINTED INTO ITS PIXELS
+             and that panel is meant to carry exactly one bubble. A caption styled like dialogue would
+             quietly undo that.
+             ⭐ AND IT IS TRUE AT BOTH WIDTHS. Genie is only "on the right" above the 900px breakpoint:
+             below it .arena collapses to one column and the genie panel, which follows .challenge in the
+             DOM, stacks FURTHER DOWN. So the position phrase is swapped by the SAME media query that
+             does the stacking (app.css, the `.arena { grid-template-columns: 1fr }` block), which is
+             what makes it impossible for the copy and the layout to disagree. Only that phrase differs:
+             "on the right" -> "further down". Every other character is as supplied. -->
+        <p class="stage-note">Chat with Genie <span class="sn-wide">on the right</span><span class="sn-narrow">further down</span> to get answers to fill in the blanks in the challenge below.</p>
+
+        <div class="story" id="story">
+          <p class="challenge-line" id="challengeLine"></p>
+          <p class="story-line" id="storyLine"></p>
+        </div>
+
+        <div class="locked" id="lockedPanel" hidden>
+          <p id="lockedMsg">This week has not been released yet.</p>
+          <button class="btn big" id="unlockBtn" hidden>Unlock week <span id="unlockNum">1</span></button>
+          <p class="muted small" id="unlockNote"></p>
+        </div>
+
+        <article class="memo" id="memo" hidden>
+          <header class="memo-head">
+            <span class="memo-row"><i>To</i><b id="memoTo"></b></span>
+            <span class="memo-row"><i>Subject</i><b id="memoSubject"></b></span>
+          </header>
+          <div class="memo-body" id="memoBody"></div>
+          <footer class="memo-foot" id="memoFoot" hidden>
+            <b>Memo complete.</b> <span id="memoFootMsg"></span>
+          </footer>
+        </article>
+      </section>
+
+      <!-- ── RIGHT: the genie ─────────────────────────────────────────────────────────── -->
+      <aside class="genie" id="genie">
+        <div class="stage stage-genie" data-mood="idle" id="genieStage">
+          <canvas id="lampCanvas" width="240" height="240" aria-hidden="true"></canvas>
+          <div class="genie-mood" id="genieMood">ready</div>
+        </div>
+        <div class="chat-head">
+          <b>Ask Genie</b>
+          <button class="btn ghost small" id="newChatBtn" title="Start a new conversation">New chat</button>
+        </div>
+        <div class="chat" id="chat" aria-live="polite"></div>
+        <div class="starters" id="starters"></div>
+        <form class="chat-form" id="chatForm" autocomplete="off">
+          <textarea id="chatInput" rows="2" maxlength="500" placeholder="Ask about the data in plain English…" aria-label="your question"></textarea>
+          <button type="submit" class="btn" id="chatBtn">Ask</button>
+        </form>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════ LEADERBOARD ════════════════════════════ -->
+  <!-- centred, with tabs. the five-figure strip at the top, fed by the leaderboard-stats endpoint's
+       /api/leaderboard/stats. -->
+  <section id="view-roster" class="view">
+    <div class="lbwrap">
+      <h2 class="lb-h">Leaderboard</h2>
+      <div class="lbstats" id="lbStats"></div>
+      <div class="lbtabs" id="lbTabs" role="tablist" aria-label="leaderboard scope"></div>
+      <div class="lb" id="lbBoard"></div>
+      <div class="lb" id="lbFirst"></div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════ OPERATOR ═══════════════════════════════ -->
+  <!-- The operator page: release weeks, the activity log and its CSV, the restore, and the reset. -->
+  <section id="view-operator" class="view">
+    <!-- ── THE UNLOCK WALL ─────────────────────────────────────────────────────
+         Shown INSTEAD of the operator content until this browser has entered the password. It sits
+         inside the operator view rather than behind the nav button on purpose: the button is shown for
+         anyone on the address allowlist, so the door is reachable before it is opened. -->
+    <div id="opLock" hidden>
+      <section class="panel oplock">
+        <h3>Operator access</h3>
+        <p id="opLockMsg" class="muted"></p>
+        <form id="opLockForm" class="logbar" autocomplete="off">
+          <input type="password" id="opLockPw" placeholder="operator password"
+                 autocomplete="current-password" spellcheck="false">
+          <button class="btn" type="submit" id="opLockGo">Unlock</button>
+        </form>
+        <p id="opLockErr" class="warn small" hidden></p>
+        <p class="muted small">Entering it once keeps this browser unlocked for as long as the app stays
+          running. A redeploy restarts the app, so everyone enters it again — that is expected.</p>
+      </section>
+    </div>
+    <div id="opBody">
+    <h2>Operator</h2>
+    <!-- ⭐ AN ANCHOR ON THE FIRST SCREEN, because measuring said the reset panel was "visible" while the
+         screenshot showed it below the fold — 174px of scroll at 1512x950, 316 at 1536x864 and 546 at
+         1280x720, since the activity log grows between them. The destructive control STAYS LAST (that is
+         the right place for it); this is how it becomes findable without being moved. The round it belongs
+         to started with a human looking for this button and not finding it. -->
+    <p class="muted small" id="opJump">On this page: release weeks · the activity log and its CSV · restore
+      from an export · <a href="#opResetPanel">reset the game</a> (deletes everyone's progress).</p>
+    <section class="card release" id="releaseCard">
+      <h3>Release weeks</h3>
+      <p class="muted small">Tick a week to let every player unlock it. Nothing is scheduled — a week
+        opens when you say so, and each player's own clock starts when <em>they</em> click to unlock.</p>
+      <div class="release-rows" id="releaseRows"></div>
+      <div class="release-actions">
+        <input id="releaseNote" placeholder="note (optional)" maxlength="120">
+        <button class="btn" id="releaseSave">Save</button>
+        <span class="muted small" id="releaseMsg"></span>
+      </div>
+    </section>
+
+    <!-- ── THE CLIENT MESSAGE ────────────────────────────────────────────────────────
+         "an additional text that we can configure from the operator page. This would be for client
+         customised messages. eg. 'Welcome Acme team!'"
+         It is a SETTING, not a deploy-time value, so it is kept the way every other setting is kept: an
+         append-only `admin_setting` row in the log table. That is what makes it survive the redeploy he
+         asked about — and it also means clearing the box and saving is how you take the line away. -->
+    <section class="card release" id="clientMsgCard">
+      <h3>Client message</h3>
+      <p class="muted small">An extra line on the home page, between the greeting and the welcome text —
+        for example <em>Welcome Acme team!</em> Leave it empty and nothing is shown at all. It survives a
+        redeploy, and it is the same for every player.</p>
+      <div class="release-actions">
+        <input id="clientMsgInput" placeholder="e.g. Welcome Acme team!" maxlength="120">
+        <button class="btn" id="clientMsgSave">Save</button>
+        <span class="muted small" id="clientMsgMsg"></span>
+      </div>
+    </section>
+    <div id="opStats"></div>
+
+    <!-- ── THE ACTIVITY LOG ─────────────────────────────────────────────────
+         An earlier version had only the writer's status blob down here. This is the log itself: 50 rows a page, a CSV
+         of the whole thing, and the import that restores from one. -->
+    <section class="panel" id="opLogPanel">
+      <h3>Activity log</h3>
+      <p class="muted small" id="opLogWhere"></p>
+      <div class="logbar">
+        <button class="btn" id="logPrev">‹ Prev</button>
+        <span class="muted small" id="logPageMsg">loading…</span>
+        <button class="btn" id="logNext">Next ›</button>
+        <label class="muted small">rows
+          <select id="logSize">
+            <option>50</option><option>100</option><option>200</option><option>500</option>
+          </select>
+        </label>
+        <span class="spacer"></span>
+        <a class="btn" id="logCsv" href="/api/export.csv" download>Download CSV</a>
+      </div>
+      <div class="logscroll"><table class="logtable" id="logTable"></table></div>
+    </section>
+
+    <!-- ── RESTORE FROM A CSV ──────────────────────────────────────────────── -->
+    <section class="panel" id="opImportPanel">
+      <h3>Restore from a log export</h3>
+      <p class="muted small">
+        The export above is the backup. Loading one back merges it in by event id, so importing the same
+        file twice changes nothing. Nothing is written until you press Import.
+      </p>
+      <div class="logbar">
+        <input type="file" id="importFile" accept=".csv,text/csv">
+        <button class="btn" id="importCheck">Check file</button>
+        <button class="btn" id="importGo" disabled>Import</button>
+      </div>
+      <div id="importMsg"></div>
+    </section>
+
+    <!-- ── RESET THE GAME — one operator control that resets the game and everyone's stats ──────────────────────────────────────────────────────────────────
+         ⛔ THREE STEPS, AND EACH ONE IS ENFORCED BY THE SERVER RATHER THAN BY THIS MARKUP:
+           1. /api/operator/reset/prepare builds the backup CSV and runs the IMPORTER'S OWN PARSER over it.
+              No token is minted if it does not parse, so "you cannot reset" is the failure direction and
+              never "reset without a backup".
+           2. the backup has to be taken away — this page will not enable the last button until it has
+              been downloaded, because the file only exists in the response.
+           3. /api/operator/reset refuses without both that token AND the exact confirm phrase, which is
+              read from the server (`reset_confirm_word`) rather than written here, so the page cannot
+              drift from the phrase the endpoint demands.
+         The button says what it does. It deletes everyone's progress, and it is labelled that way. -->
+    <section class="panel" id="opResetPanel">
+      <h3>Reset the game</h3>
+      <p class="muted small">
+        Deletes every score, answer, question, hint and clock — <b>for everyone</b>, not just you. The weeks
+        you have released <b>stay released</b>, and the activity log's own record of the reset is kept. It
+        cannot be undone, so a backup is taken and downloaded first.
+      </p>
+      <div class="logbar">
+        <button class="btn" id="resetPrepare">1 · Take backup</button>
+        <a class="btn" id="resetDownload" hidden download>2 · Download it</a>
+        <button class="btn" id="resetGo" disabled>3 · Delete everyone's progress</button>
+      </div>
+      <div class="logbar" id="resetConfirmRow" hidden>
+        <label class="muted small">type <b id="resetPhrase"></b> to confirm
+          <input id="resetConfirm" autocomplete="off" spellcheck="false" placeholder="confirm phrase">
+        </label>
+      </div>
+      <div id="resetMsg"></div>
+      <p class="muted small" id="resetLast"></p>
+    </section>
+    </div><!-- /#opBody -->
+  </section>
+</main>
+
+<script src="/sprites.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+{
+  "name": "CHANGE-ME-app-name",
+  "description": "The Genie Bake-Off — a four-week Genie game.",
+  "user_api_scopes": ["genie"]
+}

@@ -1,0 +1,46 @@
+# ── MANUAL (NO-DAB) DEPLOY — DELTA TABLE MODE ───────────────────────────────────────────────────────
+# The same as app.yaml but writing the activity log to a Unity Catalog table instead of a local file, so
+# it SURVIVES a redeploy. Use this one if you can give the app a writable table.
+#
+#     cp deploy/manual/app.delta.yaml app/app.yaml
+#
+# THREE THINGS MUST BE TRUE FIRST, and none of them is created for you on this path (the DAB path does
+# them in its postdeploy hook — see bootstrap/bootstrap.py):
+#   1. the table exists, with the schema in bootstrap/bootstrap.py (DDL at the top of that file);
+#   2. the app's own service principal has SELECT + MODIFY on it, and USE on the catalog and schema —
+#      the SP name is shown by `databricks apps get <name>`;
+#   3. the app has CAN_USE on the warehouse below (add it as an app resource named `warehouse`).
+# If any of those is missing the app still starts and serves; it just records nothing, so there is no
+# score, no leaderboard and no clock. /api/health lists what is missing.
+command: ["python", "app.py"]
+env:
+  - name: STORAGE_MODE
+    value: "delta"
+  - name: LOG_TABLE_FQN
+    value: "CHANGE-ME-catalog.night_desk.activity_log"
+  - name: WAREHOUSE_ID
+    value: "CHANGE-ME-warehouse-id"
+  # ⛔ CHANGE THIS IF THE OPERATOR PAGE MATTERS. `none` does NOT mean closed: it falls back to the
+  #    built-in default password in `app/lib/config.py`, which is PUBLIC because it is in this repo.
+  #    Anyone who can read this file or the repo can read it, so it gates PLAYERS, not someone with
+  #    workspace access. See README "The operator password".
+  - name: OPERATOR_PASSWORD
+    value: "none"
+  - name: GENIE_SPACE_TITLE
+    value: "The Data Desk"
+  - name: GENIE_SPACE_SUFFIX
+    value: "none"
+  - name: SEASON_ID
+    value: "s1_letters"
+  - name: SEASONS
+    value: "s1_letters"
+  - name: SEASON_TZ
+    value: "Australia/Sydney"
+  - name: THEME
+    value: "databricks"
+  - name: ALT_THEME
+    value: "neutral"
+  - name: ALLOW_DATE_OVERRIDE
+    value: "1"
+  - name: BUILD_ID
+    value: "manual-delta"
